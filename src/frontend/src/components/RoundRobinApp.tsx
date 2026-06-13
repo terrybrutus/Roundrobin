@@ -61,7 +61,12 @@ export default function RoundRobinApp() {
   };
   const toggleLock = (id: string) => setLockedBetIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const submit = () => { if (currentBets.length !== 11) return; setHistory([{ id: crypto.randomUUID(), bets: currentBets, createdAt: new Date().toISOString(), submitted: true }, ...history]); };
-  const clearData = () => { [SETTINGS_KEY, CACHE_KEY, HISTORY_KEY, BETS_KEY].forEach((key) => localStorage.removeItem(key)); setSettings(defaults); setCache(null); setCurrentBets([]); setHistory([]); setLockedBetIds(new Set()); setView("main"); };
+  const clearData = () => {
+    for (const key of [SETTINGS_KEY, CACHE_KEY, HISTORY_KEY, BETS_KEY]) {
+      localStorage.removeItem(key);
+    }
+    setSettings(defaults); setCache(null); setCurrentBets([]); setHistory([]); setLockedBetIds(new Set()); setView("main");
+  };
   const category = (odds: number) => odds > 0 ? "plus100" : Math.abs(odds) <= 250 ? "minus200" : Math.abs(odds) <= 350 ? "minus300" : "minus500";
   const structureCounts = { minus200: currentBets.filter((b) => category(b.odds) === "minus200").length, minus300: currentBets.filter((b) => category(b.odds) === "minus300").length, minus500: currentBets.filter((b) => category(b.odds) === "minus500").length, plus100: currentBets.filter((b) => category(b.odds) === "plus100").length };
 
