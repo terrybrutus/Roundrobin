@@ -1,0 +1,17 @@
+{
+  "overview": "A simple one-page tool to test deep links that open sportsbook apps like FanDuel and DraftKings directly from the browser.",
+  "features": [
+    "Paste any deep link URL into the input field",
+    "One-tap preset buttons for FanDuel and DraftKings",
+    "Test button that attempts to open the sportsbook app",
+    "Simple feedback when a link is triggered"
+  ],
+  "category": "tool",
+  "tags": [
+    "sports-betting",
+    "deep-links",
+    "sportsbook",
+    "testing-tool"
+  ],
+  "last_updated": "2026-06-13T02:45:05.957Z"
+}

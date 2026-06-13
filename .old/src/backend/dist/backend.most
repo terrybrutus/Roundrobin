@@ -1,0 +1,10 @@
+// Version: 4.0.0
+type NewActor__964003113 = {};
+type OldActor__1022780267 = {};
+{
+  "20260613_000000_Init" :
+    (_old : OldActor__1022780267) -> NewActor__964003113
+}
+actor  {
+  
+};
