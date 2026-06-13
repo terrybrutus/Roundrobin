@@ -1,7 +1,10 @@
 import type { Bet } from "../types";
 
 export function BetInsights({ bets }: { bets: Bet[] }) {
-  const gameCounts = bets.reduce<Record<string, number>>((counts, bet) => ({ ...counts, [bet.game]: (counts[bet.game] || 0) + 1 }), {});
+  const gameCounts = bets.reduce<Record<string, number>>((counts, bet) => {
+    counts[bet.game] = (counts[bet.game] || 0) + 1;
+    return counts;
+  }, {});
   const concentrated = Object.entries(gameCounts).filter(([, count]) => count > 1);
   const live = bets.filter((bet) => bet.isLive).length;
   const linked = bets.filter((bet) => bet.link).length;
