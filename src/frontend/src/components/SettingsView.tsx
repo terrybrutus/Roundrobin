@@ -35,8 +35,9 @@ export function SettingsView({
       <main className="max-w-3xl mx-auto p-4 space-y-4">
         <section className="border border-border bg-card p-4 space-y-3">
           <h2 className="font-bold uppercase">API and storage</h2>
-          <label className="block text-xs">The Odds API key</label>
+          <label htmlFor="odds-api-key" className="block text-xs">The Odds API key</label>
           <input
+            id="odds-api-key"
             type="password"
             value={settings.apiKey}
             onChange={(event) => update("apiKey", event.target.value)}
