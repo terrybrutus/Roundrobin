@@ -1,4 +1,11 @@
-import type { Bet, GameOdds, Market } from "../types";
+import type {
+  ApiUsage,
+  AppSettings,
+  Bet,
+  GameOdds,
+  Market,
+  OddsCache,
+} from "../types";
 
 const STRUCTURE = [
   { category: "minus200", count: 3 },
@@ -6,17 +13,6 @@ const STRUCTURE = [
   { category: "minus500", count: 1 },
   { category: "plus100", count: 5 },
 ];
-
-interface RawBet {
-  sport: string;
-  game: string;
-  market: string;
-  selection: string;
-  odds: number;
-  link?: string;
-  marketType?: string;
-  oppositeOdds?: number;
-}
 
 function getCategory(odds: number): string {
   const absOdds = Math.abs(odds);
@@ -41,215 +37,177 @@ function hasValidPlus100Pairing(
   market: Market,
 ): boolean {
   if (outcome.price <= 0 || outcome.price > 150) return false;
-
-  const oppositeOutcome = market.outcomes.find(
-    (o) => o.name !== outcome.name && o.price < 0 && Math.abs(o.price) <= 200,
+  return market.outcomes.some(
+    (candidate) =>
+      candidate.name !== outcome.name &&
+      candidate.price < 0 &&
+      Math.abs(candidate.price) <= 200,
   );
-
-  return !!oppositeOutcome;
 }
 
-async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
-  try {
-    const sportsRes = await fetch(
-      `https://api.the-odds-api.com/v4/sports/?apiKey=${encodeURIComponent(apiKey)}`,
-    );
-    if (!sportsRes.ok) {
-      throw new Error(`Failed to fetch sports (${sportsRes.status})`);
-    }
-    const sports = await sportsRes.json();
-    console.log(`Fetched ${sports.length} sports`);
+function parseUsage(response: Response): ApiUsage {
+  const parse = (name: string) => {
+    const value = response.headers.get(name);
+    return value === null ? null : Number(value);
+  };
+  return {
+    used: parse("x-requests-used"),
+    remaining: parse("x-requests-remaining"),
+    last: parse("x-requests-last"),
+    updatedAt: new Date().toISOString(),
+  };
+}
 
-    const gamesByMarket = new Map<string, GameOdds[]>();
-
-    for (const sport of sports) {
-      if (!sport.active) continue;
-
-      const query = new URLSearchParams({
-        apiKey,
-        regions: "us",
-        markets: "h2h",
-        oddsFormat: "american",
-        includeLinks: "true",
-      });
-      const gamesRes = await fetch(
-        `https://api.the-odds-api.com/v4/sports/${sport.key}/odds?${query}`,
-      );
-
-      if (gamesRes.ok) {
-        const games: GameOdds[] = await gamesRes.json();
-        console.log(`  ${sport.title}: ${games.length} games`);
-        if (games.length > 0) {
-          gamesByMarket.set(sport.key, games);
-        }
-      } else {
-        console.log(`  ${sport.title}: fetch failed (${gamesRes.status})`);
-      }
-    }
-
-    console.log(`Total sports with games: ${gamesByMarket.size}`);
-    return gamesByMarket;
-  } catch (err) {
-    console.error("fetchAllGames error:", err);
-    throw new Error(
-      `Failed to fetch games: ${err instanceof Error ? err.message : "Unknown error"}`,
-    );
+function explainApiFailure(response: Response, usage: ApiUsage): string {
+  if (response.status === 429 || usage.remaining === 0) {
+    return `Odds API quota exhausted. Used: ${usage.used ?? "unknown"}, remaining: ${usage.remaining ?? 0}.`;
   }
+  if (response.status === 401) return "The Odds API rejected the saved API key.";
+  return `The Odds API request failed (${response.status}).`;
 }
 
-function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
-  const allBets: RawBet[] = [];
-  const seenBets = new Set<string>();
-  let totalOutcomes = 0;
-  let invalidOdds = 0;
-  let invalidPairing = 0;
-  let valid = 0;
+function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
+  const now = Date.now();
+  const latestAllowed = now + settings.timeWindowHours * 60 * 60 * 1000;
+  const seen = new Set<string>();
+  const bets: Bet[] = [];
 
-  for (const [, games] of gamesByMarket) {
-    for (const game of games) {
-      for (const bookmaker of game.bookmakers || []) {
-        for (const market of bookmaker.markets || []) {
-          for (const outcome of market.outcomes || []) {
-            totalOutcomes++;
+  for (const game of games) {
+    const startsAt = new Date(game.commence_time).getTime();
+    if (startsAt > latestAllowed) continue;
 
-            if (!isValidOdds(outcome.price)) {
-              invalidOdds++;
-              continue;
-            }
-
-            const category = getCategory(outcome.price);
-            const betKey = `${game.home_team}|${game.away_team}|${market.key}|${outcome.name}|${outcome.price}`;
-
-            if (seenBets.has(betKey)) continue;
-            seenBets.add(betKey);
-
-            if (
-              category === "plus100" &&
-              !hasValidPlus100Pairing(outcome, market)
-            ) {
-              invalidPairing++;
-              continue;
-            }
-
-            valid++;
-            allBets.push({
-              sport: game.sport_title,
-              game: `${game.home_team} vs ${game.away_team}`,
-              market: market.key,
-              selection: outcome.name,
-              odds: outcome.price,
-              link: bookmaker.link,
-              marketType: market.key,
-            });
+    for (const bookmaker of game.bookmakers || []) {
+      if (bookmaker.key !== settings.bookmaker) continue;
+      for (const market of bookmaker.markets || []) {
+        for (const outcome of market.outcomes || []) {
+          if (!isValidOdds(outcome.price)) continue;
+          if (
+            getCategory(outcome.price) === "plus100" &&
+            !hasValidPlus100Pairing(outcome, market)
+          ) {
+            continue;
           }
+
+          const key = `${game.id}|${market.key}|${outcome.name}|${outcome.description ?? ""}|${outcome.point ?? ""}|${outcome.price}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const link = outcome.link || market.link || bookmaker.link;
+          if (settings.requireDeepLink && !link) continue;
+
+          bets.push({
+            id: key,
+            eventId: game.id,
+            sport: game.sport_title,
+            game: `${game.away_team} @ ${game.home_team}`,
+            market: market.key,
+            selection: outcome.name,
+            description: outcome.description,
+            odds: outcome.price,
+            point: outcome.point,
+            link,
+            marketType: market.key,
+            commenceTime: game.commence_time,
+            lastUpdate: market.last_update || bookmaker.last_update,
+            isLive: startsAt <= now,
+          });
         }
       }
     }
   }
 
-  console.log(`Bet extraction: ${totalOutcomes} outcomes`);
-  console.log(
-    `Valid odds: ${valid}, invalid odds: ${invalidOdds}, invalid +100 pairing: ${invalidPairing}`,
-  );
-  console.log(`Final valid bets: ${allBets.length}`);
-
-  return allBets;
+  return bets;
 }
 
-function buildRoundRobin(
-  allBets: RawBet[],
-  lockedBets: Map<string, Bet>,
-): Bet[] {
-  const result: Bet[] = Array.from(lockedBets.values());
-  const usedBetKeys = new Set<string>(
-    result.map((b) => `${b.game}|${b.market}|${b.selection}|${b.odds}`),
-  );
+export async function refreshOdds(
+  apiKey: string,
+  settings: AppSettings,
+): Promise<OddsCache> {
+  const markets = [
+    ...settings.markets,
+    ...settings.customMarkets
+      .split(",")
+      .map((market) => market.trim())
+      .filter(Boolean),
+  ];
+  const query = new URLSearchParams({
+    apiKey,
+    bookmakers: settings.bookmaker,
+    markets: [...new Set(markets)].join(","),
+    oddsFormat: "american",
+    includeLinks: "true",
+    includeSids: "true",
+  });
 
-  const categoryCounts: Record<string, number> = {
+  const response = await fetch(
+    `https://api.the-odds-api.com/v4/sports/upcoming/odds?${query}`,
+  );
+  const usage = parseUsage(response);
+  if (!response.ok) throw new Error(explainApiFailure(response, usage));
+
+  const games: GameOdds[] = await response.json();
+  const bets = extractValidBets(games, settings);
+  if (bets.length === 0) {
+    throw new Error(
+      `No eligible ${settings.bookmaker} bets were returned. Remaining API credits: ${usage.remaining ?? "unknown"}. Try widening the time window, allowing bets without deep links, or changing markets.`,
+    );
+  }
+
+  return { bets, usage, fetchedAt: new Date().toISOString() };
+}
+
+function priorityScore(bet: Bet, settings: AppSettings): number {
+  const now = Date.now();
+  const startsAt = new Date(bet.commenceTime || 0).getTime();
+  const hoursAway = Math.max(0, (startsAt - now) / 3_600_000);
+  const today = new Date(startsAt).toDateString() === new Date(now).toDateString();
+  const updateAgeMinutes = bet.lastUpdate
+    ? Math.max(0, (now - new Date(bet.lastUpdate).getTime()) / 60_000)
+    : 120;
+
+  let score = Math.random() * 30 - hoursAway;
+  if (settings.liveFirst && bet.isLive) score += 100;
+  if (settings.todayFirst && today) score += 40;
+  if (bet.isLive && updateAgeMinutes <= 5) score += 30;
+  if (bet.link) score += 5;
+  return score;
+}
+
+export function randomizeRoundRobin(
+  allBets: Bet[],
+  lockedBetIds: Set<string>,
+  currentBets: Bet[],
+  settings: AppSettings,
+): Bet[] {
+  const locked = currentBets.filter((bet) => lockedBetIds.has(bet.id || ""));
+  const result = [...locked];
+  const used = new Set(result.map((bet) => bet.id));
+  const counts: Record<string, number> = {
     minus200: 0,
     minus300: 0,
     minus500: 0,
     plus100: 0,
   };
 
-  for (const bet of result) {
-    const cat = getCategory(bet.odds);
-    categoryCounts[cat]++;
-  }
+  for (const bet of result) counts[getCategory(bet.odds)]++;
 
-  const needed: Record<string, number> = {
-    minus200: 3 - categoryCounts.minus200,
-    minus300: 2 - categoryCounts.minus300,
-    minus500: 1 - categoryCounts.minus500,
-    plus100: 5 - categoryCounts.plus100,
-  };
-
-  const categorized: Record<string, RawBet[]> = {
-    minus200: [],
-    minus300: [],
-    minus500: [],
-    plus100: [],
-  };
-
-  for (const bet of allBets) {
-    const cat = getCategory(bet.odds);
-    if (
-      !usedBetKeys.has(`${bet.game}|${bet.market}|${bet.selection}|${bet.odds}`)
-    ) {
-      categorized[cat].push(bet);
+  for (const item of STRUCTURE) {
+    const candidates = allBets
+      .filter((bet) => getCategory(bet.odds) === item.category && !used.has(bet.id))
+      .sort((a, b) => priorityScore(b, settings) - priorityScore(a, settings));
+    const needed = Math.max(0, item.count - counts[item.category]);
+    for (const bet of candidates.slice(0, needed)) {
+      result.push({ ...bet, id: bet.id || crypto.randomUUID() });
+      used.add(bet.id);
     }
   }
-
-  for (const cat in categorized) {
-    for (let i = categorized[cat].length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [categorized[cat][i], categorized[cat][j]] = [
-        categorized[cat][j],
-        categorized[cat][i],
-      ];
-    }
-  }
-
-  for (const struct of STRUCTURE) {
-    const cat = struct.category;
-    const fillCount = needed[cat];
-
-    for (let i = 0; i < fillCount && categorized[cat].length > 0; i++) {
-      const rawBet = categorized[cat].pop()!;
-      result.push({
-        id: Math.random().toString(),
-        ...rawBet,
-      });
-    }
-  }
-
-  return result.slice(0, 11);
-}
-
-export async function randomizeRoundRobin(
-  apiKey: string,
-  lockedBetIds: Set<string>,
-  currentBets: Bet[],
-): Promise<Bet[]> {
-  const lockedBetsMap = new Map<string, Bet>();
-
-  for (const bet of currentBets) {
-    if (lockedBetIds.has(bet.id || "")) {
-      lockedBetsMap.set(bet.id || "", bet);
-    }
-  }
-
-  const gamesByMarket = await fetchAllGames(apiKey);
-  const allBets = extractValidBets(gamesByMarket);
-
-  if (allBets.length < 11) {
-    throw new Error(`Not enough valid bets available (${allBets.length}/11)`);
-  }
-
-  const result = buildRoundRobin(allBets, lockedBetsMap);
 
   if (result.length !== 11) {
-    throw new Error(`Could not generate 11 bets (got ${result.length})`);
+    const availability = STRUCTURE.map(
+      (item) =>
+        `${item.category}: ${allBets.filter((bet) => getCategory(bet.odds) === item.category).length}/${item.count}`,
+    ).join(", ");
+    throw new Error(`Could not build the required 11 bets. Available by group: ${availability}.`);
   }
 
   return result;
