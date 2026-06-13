@@ -123,7 +123,10 @@ function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
             if (seenBets.has(betKey)) continue;
             seenBets.add(betKey);
 
-            if (category === "plus100" && !hasValidPlus100Pairing(outcome, market)) {
+            if (
+              category === "plus100" &&
+              !hasValidPlus100Pairing(outcome, market)
+            ) {
               invalidPairing++;
               continue;
             }
