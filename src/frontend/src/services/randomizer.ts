@@ -177,7 +177,12 @@ export async function refreshSelectedBets(
     if (bet.eventId && bet.sportKey) uniqueEvents.set(bet.eventId, bet);
   }
   const games: GameOdds[] = [];
-  let usage: ApiUsage = { used: null, remaining: null, last: null, updatedAt: new Date().toISOString() };
+  let usage: ApiUsage = {
+    used: null,
+    remaining: null,
+    last: null,
+    updatedAt: new Date().toISOString(),
+  };
   for (const bet of uniqueEvents.values()) {
     const query = new URLSearchParams({
       apiKey,
@@ -193,7 +198,11 @@ export async function refreshSelectedBets(
     usage = parseUsage(response);
     if (response.ok) games.push(await response.json());
   }
-  return { bets: extractValidBets(games, settings), usage, fetchedAt: new Date().toISOString() };
+  return {
+    bets: extractValidBets(games, settings),
+    usage,
+    fetchedAt: new Date().toISOString(),
+  };
 }
 
 function priorityScore(bet: Bet, settings: AppSettings): number {
@@ -205,7 +214,11 @@ function priorityScore(bet: Bet, settings: AppSettings): number {
     : 120;
   if (settings.strategyMode === "random") return Math.random() * 100;
   let score = 10_000 - minutesAway;
-  if (settings.todayFirst && new Date(startsAt).toDateString() === new Date().toDateString()) score += 500;
+  if (
+    settings.todayFirst &&
+    new Date(startsAt).toDateString() === new Date().toDateString()
+  )
+    score += 500;
   if (settings.strategyMode === "placement") {
     if (bet.isLive) score -= 2_000;
     if (bet.market.includes("player")) score -= 350;
@@ -225,9 +238,18 @@ function opposingSelection(candidate: Bet, result: Bet[]): boolean {
 }
 
 function canAdd(candidate: Bet, result: Bet[], settings: AppSettings): boolean {
-  if (result.filter((bet) => bet.eventId === candidate.eventId).length >= settings.maxPerEvent) return false;
-  if (result.filter((bet) => bet.sport === candidate.sport).length >= settings.maxPerSport) return false;
-  if (settings.avoidOpposingSelections && opposingSelection(candidate, result)) return false;
+  if (
+    result.filter((bet) => bet.eventId === candidate.eventId).length >=
+    settings.maxPerEvent
+  )
+    return false;
+  if (
+    result.filter((bet) => bet.sport === candidate.sport).length >=
+    settings.maxPerSport
+  )
+    return false;
+  if (settings.avoidOpposingSelections && opposingSelection(candidate, result))
+    return false;
   return true;
 }
 
@@ -239,27 +261,47 @@ export function randomizeRoundRobin(
 ): Bet[] {
   const result = currentBets.filter((bet) => lockedBetIds.has(bet.id || ""));
   const used = new Set(result.map((bet) => bet.id));
-  const counts: Record<string, number> = { minus200: 0, minus300: 0, minus500: 0, plus100: 0 };
+  const counts: Record<string, number> = {
+    minus200: 0,
+    minus300: 0,
+    minus500: 0,
+    plus100: 0,
+  };
   for (const bet of result) counts[getCategory(bet.odds)]++;
 
   for (const item of STRUCTURE) {
     const candidates = allBets
-      .filter((bet) => getCategory(bet.odds) === item.category && !used.has(bet.id))
+      .filter(
+        (bet) => getCategory(bet.odds) === item.category && !used.has(bet.id),
+      )
       .sort((a, b) => priorityScore(b, settings) - priorityScore(a, settings));
-    const needed = Math.max(0, item.count - counts[item.category]);
     for (const bet of candidates) {
-      if (result.filter((entry) => getCategory(entry.odds) === item.category).length >= item.count) break;
+      if (
+        result.filter((entry) => getCategory(entry.odds) === item.category)
+          .length >= item.count
+      )
+        break;
       if (!canAdd(bet, result, settings)) continue;
       result.push({ ...bet, id: bet.id || crypto.randomUUID() });
       used.add(bet.id);
     }
-    if (result.filter((entry) => getCategory(entry.odds) === item.category).length < item.count) {
-      throw new Error(`Diversification rules left too few ${item.category} bets. Loosen maximum-per-event or maximum-per-sport settings.`);
+    if (
+      result.filter((entry) => getCategory(entry.odds) === item.category)
+        .length < item.count
+    ) {
+      throw new Error(
+        `Diversification rules left too few ${item.category} bets. Loosen maximum-per-event or maximum-per-sport settings.`,
+      );
     }
   }
 
-  if (new Set(result.map((bet) => bet.eventId)).size < settings.minimumUniqueEvents) {
-    throw new Error(`Generated set did not reach the required ${settings.minimumUniqueEvents} unique events. Loosen filters or refresh more markets.`);
+  if (
+    new Set(result.map((bet) => bet.eventId)).size <
+    settings.minimumUniqueEvents
+  ) {
+    throw new Error(
+      `Generated set did not reach the required ${settings.minimumUniqueEvents} unique events. Loosen filters or refresh more markets.`,
+    );
   }
   return result;
 }
