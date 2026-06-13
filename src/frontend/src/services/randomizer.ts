@@ -62,7 +62,8 @@ function explainApiFailure(response: Response, usage: ApiUsage): string {
   if (response.status === 429 || usage.remaining === 0) {
     return `Odds API quota exhausted. Used: ${usage.used ?? "unknown"}, remaining: ${usage.remaining ?? 0}.`;
   }
-  if (response.status === 401) return "The Odds API rejected the saved API key.";
+  if (response.status === 401)
+    return "The Odds API rejected the saved API key.";
   return `The Odds API request failed (${response.status}).`;
 }
 
@@ -160,7 +161,8 @@ function priorityScore(bet: Bet, settings: AppSettings): number {
   const now = Date.now();
   const startsAt = new Date(bet.commenceTime || 0).getTime();
   const hoursAway = Math.max(0, (startsAt - now) / 3_600_000);
-  const today = new Date(startsAt).toDateString() === new Date(now).toDateString();
+  const today =
+    new Date(startsAt).toDateString() === new Date(now).toDateString();
   const updateAgeMinutes = bet.lastUpdate
     ? Math.max(0, (now - new Date(bet.lastUpdate).getTime()) / 60_000)
     : 120;
@@ -193,7 +195,9 @@ export function randomizeRoundRobin(
 
   for (const item of STRUCTURE) {
     const candidates = allBets
-      .filter((bet) => getCategory(bet.odds) === item.category && !used.has(bet.id))
+      .filter(
+        (bet) => getCategory(bet.odds) === item.category && !used.has(bet.id),
+      )
       .sort((a, b) => priorityScore(b, settings) - priorityScore(a, settings));
     const needed = Math.max(0, item.count - counts[item.category]);
     for (const bet of candidates.slice(0, needed)) {
@@ -207,7 +211,9 @@ export function randomizeRoundRobin(
       (item) =>
         `${item.category}: ${allBets.filter((bet) => getCategory(bet.odds) === item.category).length}/${item.count}`,
     ).join(", ");
-    throw new Error(`Could not build the required 11 bets. Available by group: ${availability}.`);
+    throw new Error(
+      `Could not build the required 11 bets. Available by group: ${availability}.`,
+    );
   }
 
   return result;
