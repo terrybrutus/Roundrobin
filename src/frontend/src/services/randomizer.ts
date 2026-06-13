@@ -56,6 +56,7 @@ async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
     );
     if (!sportsRes.ok) throw new Error("Failed to fetch sports");
     const sports = await sportsRes.json();
+    console.log(`Fetched ${sports.length} sports`);
 
     const gamesByMarket = new Map<string, GameOdds[]>();
 
@@ -68,14 +69,21 @@ async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
 
       if (gamesRes.ok) {
         const games = await gamesRes.json();
+        console.log(`  ${sport.sport_title}: ${games.length} games`);
         if (games.length > 0) {
           gamesByMarket.set(sport.key, games);
         }
+      } else {
+        console.log(
+          `  ${sport.sport_title}: fetch failed (${gamesRes.status})`,
+        );
       }
     }
 
+    console.log(`Total sports with games: ${gamesByMarket.size}`);
     return gamesByMarket;
   } catch (err) {
+    console.error("fetchAllGames error:", err);
     throw new Error(
       `Failed to fetch games: ${err instanceof Error ? err.message : "Unknown error"}`,
     );
@@ -85,12 +93,21 @@ async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
 function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
   const allBets: RawBet[] = [];
   const seenBets = new Set<string>();
+  let totalOutcomes = 0;
+  let invalidOdds = 0;
+  let invalidPairing = 0;
+  let valid = 0;
 
   for (const [, games] of gamesByMarket) {
     for (const game of games) {
       for (const market of game.markets || []) {
         for (const outcome of market.outcomes || []) {
-          if (!isValidOdds(outcome.price)) continue;
+          totalOutcomes++;
+
+          if (!isValidOdds(outcome.price)) {
+            invalidOdds++;
+            continue;
+          }
 
           const category = getCategory(outcome.price);
           const betKey = `${game.home_team}|${game.away_team}|${market.key}|${outcome.name}|${outcome.price}`;
@@ -99,13 +116,17 @@ function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
           seenBets.add(betKey);
 
           // Validate +100 bets have proper pairing
-          if (
-            category === "plus100" &&
-            !hasValidPlus100Pairing(outcome, market)
-          ) {
-            continue;
+          if (category === "plus100") {
+            if (!hasValidPlus100Pairing(outcome, market)) {
+              console.log(
+                `  Rejected +100: ${game.home_team} vs ${game.away_team} - ${outcome.name} @ ${outcome.price}`,
+              );
+              invalidPairing++;
+              continue;
+            }
           }
 
+          valid++;
           const bet: RawBet = {
             sport: game.sport_title,
             game: `${game.home_team} vs ${game.away_team}`,
@@ -121,6 +142,12 @@ function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
       }
     }
   }
+
+  console.log(`Bet extraction: ${totalOutcomes} outcomes`);
+  console.log(
+    `  ✓ Valid odds: ${valid}, ✗ Invalid odds: ${invalidOdds}, ✗ Invalid +100 pairing: ${invalidPairing}`,
+  );
+  console.log(`Final valid bets: ${allBets.length}`);
 
   return allBets;
 }
