@@ -46,6 +46,7 @@ export interface GameOdds {
 export interface Bet {
   id?: string;
   eventId?: string;
+  sportKey?: string;
   sport: string;
   game: string;
   market: string;
@@ -73,6 +74,9 @@ export interface OddsCache {
   usage: ApiUsage;
 }
 
+export type TimingMode = "upcoming" | "live" | "mixed";
+export type StrategyMode = "soonest" | "placement" | "random";
+
 export interface AppSettings {
   rememberKey: boolean;
   apiKey: string;
@@ -80,12 +84,18 @@ export interface AppSettings {
   markets: string[];
   customMarkets: string;
   timeWindowHours: number;
+  minimumLeadMinutes: number;
   cacheMinutes: number;
-  liveFirst: boolean;
+  timingMode: TimingMode;
+  strategyMode: StrategyMode;
   todayFirst: boolean;
   requireDeepLink: boolean;
   propsMode: boolean;
   propEventLimit: number;
+  maxPerEvent: number;
+  maxPerSport: number;
+  avoidOpposingSelections: boolean;
+  minimumUniqueEvents: number;
   bankroll: number;
   roundRobinSize: number;
 }
