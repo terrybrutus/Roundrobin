@@ -16,7 +16,8 @@ const STRUCTURE = [
 
 export function StructureProgress({ structureCounts }: StructureProgressProps) {
   const total = Object.values(structureCounts).reduce((a, b) => a + b, 0);
-  const isComplete = total === 11 &&
+  const isComplete =
+    total === 11 &&
     structureCounts.minus200 === 3 &&
     structureCounts.minus300 === 2 &&
     structureCounts.minus500 === 1 &&
@@ -40,7 +41,9 @@ export function StructureProgress({ structureCounts }: StructureProgressProps) {
             <div key={key}>
               <div className="flex justify-between mb-1">
                 <span className="text-xs font-semibold">{label}</span>
-                <span className={`text-xs font-mono ${isFull ? "text-green-500" : ""}`}>
+                <span
+                  className={`text-xs font-mono ${isFull ? "text-green-500" : ""}`}
+                >
                   {count}/{max}
                 </span>
               </div>
@@ -57,7 +60,9 @@ export function StructureProgress({ structureCounts }: StructureProgressProps) {
 
       {isComplete && (
         <div className="mt-4 p-2 bg-green-500/10 border border-green-500/30 rounded">
-          <p className="text-xs text-green-500 font-semibold">✓ Perfect structure!</p>
+          <p className="text-xs text-green-500 font-semibold">
+            ✓ Perfect structure!
+          </p>
         </div>
       )}
     </div>

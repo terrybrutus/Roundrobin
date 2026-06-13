@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Copy, X } from "lucide-react";
+import { useState } from "react";
 import type { Bet } from "../types";
 
 interface BetslipSummaryProps {
@@ -12,7 +12,10 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
 
   const copyToClipboard = () => {
     const text = bets
-      .map((bet) => `${bet.sport} - ${bet.game}\n${bet.market}: ${bet.selection} (${bet.odds})`)
+      .map(
+        (bet) =>
+          `${bet.sport} - ${bet.game}\n${bet.market}: ${bet.selection} (${bet.odds})`,
+      )
       .join("\n\n");
     navigator.clipboard.writeText(text);
     setCopied(true);
@@ -32,6 +35,7 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
       <div className="border-b border-border p-4 flex items-center justify-between">
         <h2 className="text-sm font-bold uppercase tracking-wide">Betslip</h2>
         <button
+          type="button"
           onClick={copyToClipboard}
           className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider px-3 py-2 border border-border hover:border-primary hover:text-primary transition-colors"
         >
@@ -42,7 +46,10 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
 
       <div className="divide-y divide-border max-h-96 overflow-y-auto">
         {bets.map((bet, idx) => (
-          <div key={bet.id} className="p-4 hover:bg-accent/30 transition-colors">
+          <div
+            key={bet.id}
+            className="p-4 hover:bg-accent/30 transition-colors"
+          >
             <div className="flex justify-between items-start gap-2">
               <div className="flex-1">
                 <p className="text-xs font-mono text-muted-foreground">
@@ -67,6 +74,7 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
                   {getOddsCategory(bet.odds)}
                 </div>
                 <button
+                  type="button"
                   onClick={() => onRemoveBet(bet.id || "")}
                   className="mt-2 text-muted-foreground hover:text-red-500 transition-colors"
                   aria-label="Remove bet"
@@ -80,7 +88,9 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
       </div>
 
       <div className="border-t border-border p-4 bg-accent/20">
-        <div className="text-xs font-mono text-muted-foreground mb-2">Summary</div>
+        <div className="text-xs font-mono text-muted-foreground mb-2">
+          Summary
+        </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <span className="text-muted-foreground">Bets Selected:</span>
@@ -89,7 +99,9 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
           <div>
             <span className="text-muted-foreground">Avg Odds:</span>
             <span className="ml-2 font-semibold">
-              {(bets.reduce((sum, b) => sum + b.odds, 0) / bets.length).toFixed(0)}
+              {(bets.reduce((sum, b) => sum + b.odds, 0) / bets.length).toFixed(
+                0,
+              )}
             </span>
           </div>
         </div>
