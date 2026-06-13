@@ -32,53 +32,266 @@ const defaults: AppSettings = {
 };
 
 function load<T>(key: string, fallback: T): T {
-  try { return JSON.parse(localStorage.getItem(key) || "") as T; } catch { return fallback; }
+  try {
+    return JSON.parse(localStorage.getItem(key) || "") as T;
+  } catch {
+    return fallback;
+  }
 }
 
 export default function RoundRobinApp() {
-  const [settings, setSettings] = useState<AppSettings>(() => ({ ...defaults, ...load(SETTINGS_KEY, {}) }));
-  const [cache, setCache] = useState<OddsCache | null>(() => load(CACHE_KEY, null));
-  const [currentBets, setCurrentBets] = useState<Bet[]>(() => load(BETS_KEY, []));
-  const [history, setHistory] = useState<RoundRobinSet[]>(() => load(HISTORY_KEY, []));
+  const [settings, setSettings] = useState<AppSettings>(() => ({
+    ...defaults,
+    ...load(SETTINGS_KEY, {}),
+  }));
+  const [cache, setCache] = useState<OddsCache | null>(() =>
+    load(CACHE_KEY, null),
+  );
+  const [currentBets, setCurrentBets] = useState<Bet[]>(() =>
+    load(BETS_KEY, []),
+  );
+  const [history, setHistory] = useState<RoundRobinSet[]>(() =>
+    load(HISTORY_KEY, []),
+  );
   const [lockedBetIds, setLockedBetIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"main" | "settings" | "history">("main");
 
-  useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, apiKey: settings.rememberKey ? settings.apiKey : "" })); }, [settings]);
-  useEffect(() => { if (cache) localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); }, [cache]);
-  useEffect(() => { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); }, [history]);
-  useEffect(() => { localStorage.setItem(BETS_KEY, JSON.stringify(currentBets)); }, [currentBets]);
+  useEffect(() => {
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({
+        ...settings,
+        apiKey: settings.rememberKey ? settings.apiKey : "",
+      }),
+    );
+  }, [settings]);
+  useEffect(() => {
+    if (cache) localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  }, [cache]);
+  useEffect(() => {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  }, [history]);
+  useEffect(() => {
+    localStorage.setItem(BETS_KEY, JSON.stringify(currentBets));
+  }, [currentBets]);
 
-  const cacheFresh = cache && Date.now() - new Date(cache.fetchedAt).getTime() < settings.cacheMinutes * 60_000;
+  const cacheFresh =
+    cache &&
+    Date.now() - new Date(cache.fetchedAt).getTime() <
+      settings.cacheMinutes * 60_000;
   const handleRefresh = async () => {
-    if (!settings.apiKey) { setView("settings"); setError("Add The Odds API key in Settings first."); return; }
-    try { setLoading(true); setError(null); setCache(await refreshOdds(settings.apiKey, settings)); } catch (err) { setError(err instanceof Error ? err.message : "Refresh failed"); } finally { setLoading(false); }
+    if (!settings.apiKey) {
+      setView("settings");
+      setError("Add The Odds API key in Settings first.");
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      setCache(await refreshOdds(settings.apiKey, settings));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Refresh failed");
+    } finally {
+      setLoading(false);
+    }
   };
   const randomize = () => {
-    if (!cache) { setError("Refresh FanDuel odds before randomizing."); return; }
-    try { setError(null); setCurrentBets(randomizeRoundRobin(cache.bets, lockedBetIds, currentBets, settings)); } catch (err) { setError(err instanceof Error ? err.message : "Randomization failed"); }
+    if (!cache) {
+      setError("Refresh FanDuel odds before randomizing.");
+      return;
+    }
+    try {
+      setError(null);
+      setCurrentBets(
+        randomizeRoundRobin(cache.bets, lockedBetIds, currentBets, settings),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Randomization failed");
+    }
   };
-  const toggleLock = (id: string) => setLockedBetIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
-  const submit = () => { if (currentBets.length !== 11) return; setHistory([{ id: crypto.randomUUID(), bets: currentBets, createdAt: new Date().toISOString(), submitted: true }, ...history]); };
+  const toggleLock = (id: string) =>
+    setLockedBetIds((current) => {
+      const next = new Set(current);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const submit = () => {
+    if (currentBets.length !== 11) return;
+    setHistory([
+      {
+        id: crypto.randomUUID(),
+        bets: currentBets,
+        createdAt: new Date().toISOString(),
+        submitted: true,
+      },
+      ...history,
+    ]);
+  };
   const clearData = () => {
     for (const key of [SETTINGS_KEY, CACHE_KEY, HISTORY_KEY, BETS_KEY]) {
       localStorage.removeItem(key);
     }
-    setSettings(defaults); setCache(null); setCurrentBets([]); setHistory([]); setLockedBetIds(new Set()); setView("main");
+    setSettings(defaults);
+    setCache(null);
+    setCurrentBets([]);
+    setHistory([]);
+    setLockedBetIds(new Set());
+    setView("main");
   };
-  const category = (odds: number) => odds > 0 ? "plus100" : Math.abs(odds) <= 250 ? "minus200" : Math.abs(odds) <= 350 ? "minus300" : "minus500";
-  const structureCounts = { minus200: currentBets.filter((b) => category(b.odds) === "minus200").length, minus300: currentBets.filter((b) => category(b.odds) === "minus300").length, minus500: currentBets.filter((b) => category(b.odds) === "minus500").length, plus100: currentBets.filter((b) => category(b.odds) === "plus100").length };
+  const category = (odds: number) =>
+    odds > 0
+      ? "plus100"
+      : Math.abs(odds) <= 250
+        ? "minus200"
+        : Math.abs(odds) <= 350
+          ? "minus300"
+          : "minus500";
+  const structureCounts = {
+    minus200: currentBets.filter((b) => category(b.odds) === "minus200").length,
+    minus300: currentBets.filter((b) => category(b.odds) === "minus300").length,
+    minus500: currentBets.filter((b) => category(b.odds) === "minus500").length,
+    plus100: currentBets.filter((b) => category(b.odds) === "plus100").length,
+  };
 
-  if (view === "settings") return <SettingsView settings={settings} onChange={setSettings} onBack={() => setView("main")} onClearData={clearData} />;
-  if (view === "history") return <HistoryView history={history} onBack={() => setView("main")} />;
+  if (view === "settings")
+    return (
+      <SettingsView
+        settings={settings}
+        onChange={setSettings}
+        onBack={() => setView("main")}
+        onClearData={clearData}
+      />
+    );
+  if (view === "history")
+    return <HistoryView history={history} onBack={() => setView("main")} />;
 
-  return <div className="min-h-screen bg-background text-foreground font-mono">
-    <header className="px-4 py-6 border-b border-border bg-card"><div className="max-w-6xl mx-auto flex justify-between gap-3"><div><h1 className="text-3xl font-bold uppercase">Round Robin Workbench</h1><p className="text-sm text-muted-foreground">Refresh once. Randomize locally. Open on FanDuel.</p></div><div className="flex gap-2"><button type="button" onClick={() => setView("history")} className="border border-border p-3" aria-label="History"><History className="w-5 h-5" /></button><button type="button" onClick={() => setView("settings")} className="border border-border p-3" aria-label="Settings"><Settings className="w-5 h-5" /></button></div></div></header>
-    <main className="max-w-6xl mx-auto p-4 space-y-4">
-      <section className="border border-border bg-card p-4"><div className="flex flex-wrap gap-2 items-center"><button type="button" onClick={handleRefresh} disabled={loading} className="bg-primary text-primary-foreground px-5 py-3 font-bold uppercase disabled:opacity-30">{loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="flex gap-2"><RefreshCw className="w-4 h-4" />Refresh FanDuel Odds</span>}</button><button type="button" onClick={randomize} disabled={!cache || loading} className="border border-border px-5 py-3 font-bold uppercase disabled:opacity-30">Randomize From Cache</button><span className={`text-xs ${cacheFresh ? "text-green-500" : "text-yellow-500"}`}>{cache ? `${cache.bets.length} eligible bets · refreshed ${new Date(cache.fetchedAt).toLocaleTimeString()}${cacheFresh ? " · fresh" : " · stale"}` : "No cached odds"}</span></div>{cache?.usage && <div className="text-xs text-muted-foreground mt-3">API used: {cache.usage.used ?? "?"} · remaining: {cache.usage.remaining ?? "?"} · last refresh cost: {cache.usage.last ?? "?"}</div>}<p className="text-xs text-muted-foreground mt-2">Randomize From Cache costs no API credits. Refreshing requests {settings.markets.length + settings.customMarkets.split(",").filter(Boolean).length} market credits for FanDuel.</p></section>
-      {error && <div className="border border-red-500 bg-red-500/10 p-3 text-red-500 text-sm">{error}</div>}
-      {currentBets.length ? <><div className="grid lg:grid-cols-3 gap-4"><div className="lg:col-span-2"><BetslipSummary bets={currentBets} lockedBetIds={lockedBetIds} onToggleLock={toggleLock} /></div><div className="space-y-4"><StructureProgress structureCounts={structureCounts} /><BetInsights bets={currentBets} /><button type="button" onClick={submit} className="w-full bg-green-600 text-white p-3 font-bold uppercase">Save as Submitted</button></div></div><RoundRobinCalculator bets={currentBets} bankroll={settings.bankroll} size={settings.roundRobinSize} onBankrollChange={(bankroll) => setSettings({ ...settings, bankroll })} onSizeChange={(roundRobinSize) => setSettings({ ...settings, roundRobinSize })} /></> : <div className="border border-border bg-card p-10 text-center text-muted-foreground">Refresh odds, then randomize a qualifying 11-bet set.</div>}
-    </main>
-  </div>;
+  return (
+    <div className="min-h-screen bg-background text-foreground font-mono">
+      <header className="px-4 py-6 border-b border-border bg-card">
+        <div className="max-w-6xl mx-auto flex justify-between gap-3">
+          <div>
+            <h1 className="text-3xl font-bold uppercase">
+              Round Robin Workbench
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Refresh once. Randomize locally. Open on FanDuel.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setView("history")}
+              className="border border-border p-3"
+              aria-label="History"
+            >
+              <History className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("settings")}
+              className="border border-border p-3"
+              aria-label="Settings"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+      <main className="max-w-6xl mx-auto p-4 space-y-4">
+        <section className="border border-border bg-card p-4">
+          <div className="flex flex-wrap gap-2 items-center">
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={loading}
+              className="bg-primary text-primary-foreground px-5 py-3 font-bold uppercase disabled:opacity-30"
+            >
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <span className="flex gap-2">
+                  <RefreshCw className="w-4 h-4" />
+                  Refresh FanDuel Odds
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={randomize}
+              disabled={!cache || loading}
+              className="border border-border px-5 py-3 font-bold uppercase disabled:opacity-30"
+            >
+              Randomize From Cache
+            </button>
+            <span
+              className={`text-xs ${cacheFresh ? "text-green-500" : "text-yellow-500"}`}
+            >
+              {cache
+                ? `${cache.bets.length} eligible bets · refreshed ${new Date(cache.fetchedAt).toLocaleTimeString()}${cacheFresh ? " · fresh" : " · stale"}`
+                : "No cached odds"}
+            </span>
+          </div>
+          {cache?.usage && (
+            <div className="text-xs text-muted-foreground mt-3">
+              API used: {cache.usage.used ?? "?"} · remaining:{" "}
+              {cache.usage.remaining ?? "?"} · last refresh cost:{" "}
+              {cache.usage.last ?? "?"}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground mt-2">
+            Randomize From Cache costs no API credits. Refreshing requests{" "}
+            {settings.markets.length +
+              settings.customMarkets.split(",").filter(Boolean).length}{" "}
+            market credits for FanDuel.
+          </p>
+        </section>
+        {error && (
+          <div className="border border-red-500 bg-red-500/10 p-3 text-red-500 text-sm">
+            {error}
+          </div>
+        )}
+        {currentBets.length ? (
+          <>
+            <div className="grid lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2">
+                <BetslipSummary
+                  bets={currentBets}
+                  lockedBetIds={lockedBetIds}
+                  onToggleLock={toggleLock}
+                />
+              </div>
+              <div className="space-y-4">
+                <StructureProgress structureCounts={structureCounts} />
+                <BetInsights bets={currentBets} />
+                <button
+                  type="button"
+                  onClick={submit}
+                  className="w-full bg-green-600 text-white p-3 font-bold uppercase"
+                >
+                  Save as Submitted
+                </button>
+              </div>
+            </div>
+            <RoundRobinCalculator
+              bets={currentBets}
+              bankroll={settings.bankroll}
+              size={settings.roundRobinSize}
+              onBankrollChange={(bankroll) =>
+                setSettings({ ...settings, bankroll })
+              }
+              onSizeChange={(roundRobinSize) =>
+                setSettings({ ...settings, roundRobinSize })
+              }
+            />
+          </>
+        ) : (
+          <div className="border border-border bg-card p-10 text-center text-muted-foreground">
+            Refresh odds, then randomize a qualifying 11-bet set.
+          </div>
+        )}
+      </main>
+    </div>
+  );
 }
