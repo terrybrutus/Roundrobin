@@ -35,6 +35,7 @@ export interface GameOdds {
   home_team: string;
   away_team: string;
   bookmakers: Bookmaker[];
+  markets?: Market[];
 }
 
 export interface Bet {
