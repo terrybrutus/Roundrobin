@@ -1,13 +1,18 @@
-import { Copy, X } from "lucide-react";
+import { Copy, ExternalLink, Lock, LockOpen } from "lucide-react";
 import { useState } from "react";
 import type { Bet } from "../types";
 
 interface BetslipSummaryProps {
   bets: Bet[];
-  onRemoveBet: (id: string) => void;
+  lockedBetIds: Set<string>;
+  onToggleLock: (id: string) => void;
 }
 
-export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
+export function BetslipSummary({
+  bets,
+  lockedBetIds,
+  onToggleLock,
+}: BetslipSummaryProps) {
   const [copied, setCopied] = useState(false);
 
   const copyToClipboard = () => {
@@ -30,6 +35,8 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
     return "-500";
   };
 
+  const getFanduelUrl = () => "https://sportsbook.fanduel.com/";
+
   return (
     <div className="border border-border bg-card">
       <div className="border-b border-border p-4 flex items-center justify-between">
@@ -48,7 +55,11 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
         {bets.map((bet, idx) => (
           <div
             key={bet.id}
-            className="p-4 hover:bg-accent/30 transition-colors"
+            className={`p-4 transition-colors ${
+              lockedBetIds.has(bet.id || "")
+                ? "bg-blue-500/10 border-l-2 border-l-blue-500"
+                : "hover:bg-accent/30"
+            }`}
           >
             <div className="flex justify-between items-start gap-2">
               <div className="flex-1">
@@ -65,22 +76,41 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
                   </span>
                 </div>
               </div>
-              <div className="text-right">
-                <div className="text-sm font-bold">
-                  {bet.odds > 0 ? "+" : ""}
-                  {bet.odds}
+              <div className="text-right flex flex-col items-end gap-2">
+                <div>
+                  <div className="text-sm font-bold">
+                    {bet.odds > 0 ? "+" : ""}
+                    {bet.odds}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {getOddsCategory(bet.odds)}
+                  </div>
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  {getOddsCategory(bet.odds)}
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onToggleLock(bet.id || "")}
+                    className="text-muted-foreground hover:text-primary transition-colors p-1"
+                    aria-label={
+                      lockedBetIds.has(bet.id || "") ? "Unlock bet" : "Lock bet"
+                    }
+                  >
+                    {lockedBetIds.has(bet.id || "") ? (
+                      <Lock className="w-4 h-4" />
+                    ) : (
+                      <LockOpen className="w-4 h-4" />
+                    )}
+                  </button>
+                  <a
+                    href={getFanduelUrl()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted-foreground hover:text-green-500 transition-colors p-1"
+                    aria-label="Open on FanDuel"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onRemoveBet(bet.id || "")}
-                  className="mt-2 text-muted-foreground hover:text-red-500 transition-colors"
-                  aria-label="Remove bet"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
             </div>
           </div>
@@ -93,16 +123,12 @@ export function BetslipSummary({ bets, onRemoveBet }: BetslipSummaryProps) {
         </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <span className="text-muted-foreground">Bets Selected:</span>
+            <span className="text-muted-foreground">Bets:</span>
             <span className="ml-2 font-semibold">{bets.length}/11</span>
           </div>
           <div>
-            <span className="text-muted-foreground">Avg Odds:</span>
-            <span className="ml-2 font-semibold">
-              {(bets.reduce((sum, b) => sum + b.odds, 0) / bets.length).toFixed(
-                0,
-              )}
-            </span>
+            <span className="text-muted-foreground">Locked:</span>
+            <span className="ml-2 font-semibold">{lockedBetIds.size}</span>
           </div>
         </div>
       </div>
