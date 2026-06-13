@@ -1,13 +1,6 @@
-import { useState, useEffect } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
-import type { OddsData, GameOdds, Bet } from "../types";
-
-const ODD_RANGES = {
-  minus200: [150, 250],
-  minus300: [250, 350],
-  minus500: [450, 550],
-  plus100: [80, 120],
-};
+import { useEffect, useState } from "react";
+import type { Bet, GameOdds, OddsData } from "../types";
 
 interface OddsExplorerProps {
   sports: OddsData[];
@@ -31,7 +24,7 @@ export function OddsExplorer({ sports, onAddBet, apiKey }: OddsExplorerProps) {
     try {
       setLoading(true);
       const response = await fetch(
-        `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}&includeLinks=true&includeSids=true`
+        `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}&includeLinks=true&includeSids=true`,
       );
       if (!response.ok) throw new Error("Failed to fetch games");
       const data = await response.json();
@@ -53,7 +46,12 @@ export function OddsExplorer({ sports, onAddBet, apiKey }: OddsExplorerProps) {
     setExpandedGames(newSet);
   };
 
-  const oddsToBet = (outcome: string, odds: number, game: GameOdds, market: string) => ({
+  const oddsToBet = (
+    outcome: string,
+    odds: number,
+    game: GameOdds,
+    market: string,
+  ) => ({
     sport: game.sport_title,
     game: `${game.home_team} vs ${game.away_team}`,
     market: market,
@@ -74,10 +72,14 @@ export function OddsExplorer({ sports, onAddBet, apiKey }: OddsExplorerProps) {
   return (
     <div className="border border-border bg-card">
       <div className="border-b border-border p-4">
-        <label className="block text-xs uppercase tracking-widest text-muted-foreground mb-3">
+        <label
+          htmlFor="sport-select"
+          className="block text-xs uppercase tracking-widest text-muted-foreground mb-3"
+        >
           Select Sport
         </label>
         <select
+          id="sport-select"
           value={selectedSport}
           onChange={(e) => setSelectedSport(e.target.value)}
           className="w-full bg-input border border-border px-3 py-2 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
@@ -101,6 +103,7 @@ export function OddsExplorer({ sports, onAddBet, apiKey }: OddsExplorerProps) {
             games.map((game) => (
               <div key={game.id}>
                 <button
+                  type="button"
                   onClick={() => toggleGame(game.id)}
                   className="w-full p-4 flex items-center justify-between hover:bg-accent transition-colors text-left"
                 >
@@ -129,6 +132,7 @@ export function OddsExplorer({ sports, onAddBet, apiKey }: OddsExplorerProps) {
                         <div className="grid grid-cols-2 gap-2">
                           {market.outcomes.map((outcome) => (
                             <button
+                              type="button"
                               key={`${outcome.name}-${outcome.price}`}
                               onClick={() =>
                                 isValidOdds(outcome.price) &&
@@ -137,8 +141,8 @@ export function OddsExplorer({ sports, onAddBet, apiKey }: OddsExplorerProps) {
                                     outcome.name,
                                     outcome.price,
                                     game,
-                                    market.key
-                                  )
+                                    market.key,
+                                  ),
                                 )
                               }
                               disabled={!isValidOdds(outcome.price)}
