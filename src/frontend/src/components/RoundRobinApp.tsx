@@ -1,236 +1,79 @@
-import { History, Loader2 } from "lucide-react";
-import { useState } from "react";
-import { randomizeRoundRobin } from "../services/randomizer";
-import type { Bet } from "../types";
+import { History, Loader2, RefreshCw, Settings } from "lucide-react";
+import { useEffect, useState } from "react";
+import { randomizeRoundRobin, refreshOdds } from "../services/randomizer";
+import type { AppSettings, Bet, OddsCache, RoundRobinSet } from "../types";
+import { BetInsights } from "./BetInsights";
 import { BetslipSummary } from "./BetslipSummary";
 import { HistoryView } from "./HistoryView";
+import { RoundRobinCalculator } from "./RoundRobinCalculator";
+import { SettingsView } from "./SettingsView";
 import { StructureProgress } from "./StructureProgress";
 
-interface RoundRobinSet {
-  id: string;
-  bets: Bet[];
-  createdAt: Date;
-  submitted: boolean;
+const SETTINGS_KEY = "roundrobin-settings-v2";
+const CACHE_KEY = "roundrobin-odds-cache-v2";
+const HISTORY_KEY = "roundrobin-history-v2";
+const BETS_KEY = "roundrobin-current-bets-v2";
+
+const defaults: AppSettings = {
+  rememberKey: true,
+  apiKey: "",
+  bookmaker: "fanduel",
+  markets: ["h2h", "spreads", "totals"],
+  customMarkets: "",
+  timeWindowHours: 24,
+  cacheMinutes: 10,
+  liveFirst: true,
+  todayFirst: true,
+  requireDeepLink: true,
+  propsMode: false,
+  propEventLimit: 3,
+  bankroll: 100,
+  roundRobinSize: 2,
+};
+
+function load<T>(key: string, fallback: T): T {
+  try { return JSON.parse(localStorage.getItem(key) || "") as T; } catch { return fallback; }
 }
 
 export default function RoundRobinApp() {
-  const [apiKey, setApiKey] = useState("");
+  const [settings, setSettings] = useState<AppSettings>(() => ({ ...defaults, ...load(SETTINGS_KEY, {}) }));
+  const [cache, setCache] = useState<OddsCache | null>(() => load(CACHE_KEY, null));
+  const [currentBets, setCurrentBets] = useState<Bet[]>(() => load(BETS_KEY, []));
+  const [history, setHistory] = useState<RoundRobinSet[]>(() => load(HISTORY_KEY, []));
+  const [lockedBetIds, setLockedBetIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [keyInput, setKeyInput] = useState("");
-  const [currentBets, setCurrentBets] = useState<Bet[]>([]);
-  const [history, setHistory] = useState<RoundRobinSet[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
-  const [lockedBetIds, setLockedBetIds] = useState<Set<string>>(new Set());
+  const [view, setView] = useState<"main" | "settings" | "history">("main");
 
-  const handleApiKeySubmit = (key: string) => {
-    setApiKey(key);
-    setKeyInput("");
-    setError(null);
+  useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, apiKey: settings.rememberKey ? settings.apiKey : "" })); }, [settings]);
+  useEffect(() => { if (cache) localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); }, [cache]);
+  useEffect(() => { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); }, [history]);
+  useEffect(() => { localStorage.setItem(BETS_KEY, JSON.stringify(currentBets)); }, [currentBets]);
+
+  const cacheFresh = cache && Date.now() - new Date(cache.fetchedAt).getTime() < settings.cacheMinutes * 60_000;
+  const handleRefresh = async () => {
+    if (!settings.apiKey) { setView("settings"); setError("Add The Odds API key in Settings first."); return; }
+    try { setLoading(true); setError(null); setCache(await refreshOdds(settings.apiKey, settings)); } catch (err) { setError(err instanceof Error ? err.message : "Refresh failed"); } finally { setLoading(false); }
   };
-
-  const randomize = async () => {
-    if (!apiKey) return;
-    try {
-      setLoading(true);
-      setError(null);
-
-      const newBets = await randomizeRoundRobin(
-        apiKey,
-        lockedBetIds,
-        currentBets,
-      );
-
-      if (newBets.length === 11) {
-        setCurrentBets(newBets);
-      } else {
-        setError(`Failed to get 11 unique bets. Got ${newBets.length}.`);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Randomization failed");
-    } finally {
-      setLoading(false);
-    }
+  const randomize = () => {
+    if (!cache) { setError("Refresh FanDuel odds before randomizing."); return; }
+    try { setError(null); setCurrentBets(randomizeRoundRobin(cache.bets, lockedBetIds, currentBets, settings)); } catch (err) { setError(err instanceof Error ? err.message : "Randomization failed"); }
   };
+  const toggleLock = (id: string) => setLockedBetIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const submit = () => { if (currentBets.length !== 11) return; setHistory([{ id: crypto.randomUUID(), bets: currentBets, createdAt: new Date().toISOString(), submitted: true }, ...history]); };
+  const clearData = () => { [SETTINGS_KEY, CACHE_KEY, HISTORY_KEY, BETS_KEY].forEach((key) => localStorage.removeItem(key)); setSettings(defaults); setCache(null); setCurrentBets([]); setHistory([]); setLockedBetIds(new Set()); setView("main"); };
+  const category = (odds: number) => odds > 0 ? "plus100" : Math.abs(odds) <= 250 ? "minus200" : Math.abs(odds) <= 350 ? "minus300" : "minus500";
+  const structureCounts = { minus200: currentBets.filter((b) => category(b.odds) === "minus200").length, minus300: currentBets.filter((b) => category(b.odds) === "minus300").length, minus500: currentBets.filter((b) => category(b.odds) === "minus500").length, plus100: currentBets.filter((b) => category(b.odds) === "plus100").length };
 
-  const submitCurrentSet = () => {
-    if (currentBets.length !== 11) return;
+  if (view === "settings") return <SettingsView settings={settings} onChange={setSettings} onBack={() => setView("main")} onClearData={clearData} />;
+  if (view === "history") return <HistoryView history={history} onBack={() => setView("main")} />;
 
-    const newSet: RoundRobinSet = {
-      id: Math.random().toString(),
-      bets: currentBets,
-      createdAt: new Date(),
-      submitted: true,
-    };
-
-    setHistory([newSet, ...history]);
-    setCurrentBets([]);
-    setLockedBetIds(new Set());
-  };
-
-  const toggleLock = (betId: string) => {
-    const newLocked = new Set(lockedBetIds);
-    if (newLocked.has(betId)) {
-      newLocked.delete(betId);
-    } else {
-      newLocked.add(betId);
-    }
-    setLockedBetIds(newLocked);
-  };
-
-  const getCategory = (odds: number) => {
-    const absOdds = Math.abs(odds);
-    if (odds > 0) return "plus100";
-    if (absOdds <= 250) return "minus200";
-    if (absOdds <= 350) return "minus300";
-    return "minus500";
-  };
-
-  const structureCounts = {
-    minus200: currentBets.filter((b) => getCategory(b.odds) === "minus200")
-      .length,
-    minus300: currentBets.filter((b) => getCategory(b.odds) === "minus300")
-      .length,
-    minus500: currentBets.filter((b) => getCategory(b.odds) === "minus500")
-      .length,
-    plus100: currentBets.filter((b) => getCategory(b.odds) === "plus100")
-      .length,
-  };
-
-  if (showHistory) {
-    return (
-      <HistoryView history={history} onBack={() => setShowHistory(false)} />
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-background text-foreground font-mono flex flex-col">
-      {/* Header */}
-      <header className="px-4 pt-8 pb-6 border-b border-border bg-card">
-        <h1 className="text-3xl font-bold tracking-tight uppercase">
-          Round Robin Randomizer
-        </h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Auto-generate 11-bet structures
-        </p>
-      </header>
-
-      <main className="flex-1 flex flex-col gap-4 max-w-4xl w-full mx-auto px-4 py-6">
-        {/* API Key Section */}
-        {!apiKey ? (
-          <section className="border border-border p-4 bg-card">
-            <label
-              htmlFor="api-key-input"
-              className="block text-xs uppercase tracking-widest text-muted-foreground mb-3"
-            >
-              The Odds API Key
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="api-key-input"
-                type="password"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" && handleApiKeySubmit(keyInput)
-                }
-                placeholder="Enter your API key"
-                className="flex-1 bg-input border border-border px-3 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => handleApiKeySubmit(keyInput)}
-                disabled={loading || !keyInput.trim()}
-                className="bg-primary text-primary-foreground px-4 py-3 text-sm font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-30 transition-opacity"
-              >
-                {loading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  "Connect"
-                )}
-              </button>
-            </div>
-            {error && <p className="text-red-500 text-xs mt-2">{error}</p>}
-          </section>
-        ) : (
-          <>
-            {/* Controls */}
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={randomize}
-                disabled={loading}
-                className="flex-1 bg-primary text-primary-foreground px-6 py-4 text-base font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-30 transition-opacity"
-              >
-                {loading ? (
-                  <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-                ) : null}
-                Randomize
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowHistory(true)}
-                className="border border-border px-4 py-2 text-xs font-bold uppercase tracking-wider hover:bg-accent transition-colors flex items-center gap-2"
-              >
-                <History className="w-4 h-4" />
-                History ({history.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setApiKey("")}
-                className="border border-border px-4 py-2 text-xs font-bold uppercase tracking-wider hover:bg-accent transition-colors"
-              >
-                New Key
-              </button>
-            </div>
-
-            {/* Current Betslip */}
-            {currentBets.length > 0 ? (
-              <>
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                  <div className="lg:col-span-2">
-                    <BetslipSummary
-                      bets={currentBets}
-                      lockedBetIds={lockedBetIds}
-                      onToggleLock={toggleLock}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-4">
-                    <StructureProgress structureCounts={structureCounts} />
-                    <button
-                      type="button"
-                      onClick={submitCurrentSet}
-                      disabled={currentBets.length !== 11}
-                      className="bg-green-600 text-white px-4 py-3 text-sm font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-30 transition-opacity"
-                    >
-                      Mark as Submitted
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="border border-border p-8 bg-card text-center">
-                <p className="text-muted-foreground">
-                  Press "Randomize" to generate your first 11-bet set
-                </p>
-              </div>
-            )}
-
-            {error && (
-              <div className="border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-500 font-mono">
-                {error}
-              </div>
-            )}
-          </>
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-border bg-card px-4 py-4 text-center">
-        <p className="text-xs text-muted-foreground">
-          © {new Date().getFullYear()}. Round Robin Randomizer
-        </p>
-      </footer>
-    </div>
-  );
+  return <div className="min-h-screen bg-background text-foreground font-mono">
+    <header className="px-4 py-6 border-b border-border bg-card"><div className="max-w-6xl mx-auto flex justify-between gap-3"><div><h1 className="text-3xl font-bold uppercase">Round Robin Workbench</h1><p className="text-sm text-muted-foreground">Refresh once. Randomize locally. Open on FanDuel.</p></div><div className="flex gap-2"><button type="button" onClick={() => setView("history")} className="border border-border p-3" aria-label="History"><History className="w-5 h-5" /></button><button type="button" onClick={() => setView("settings")} className="border border-border p-3" aria-label="Settings"><Settings className="w-5 h-5" /></button></div></div></header>
+    <main className="max-w-6xl mx-auto p-4 space-y-4">
+      <section className="border border-border bg-card p-4"><div className="flex flex-wrap gap-2 items-center"><button type="button" onClick={handleRefresh} disabled={loading} className="bg-primary text-primary-foreground px-5 py-3 font-bold uppercase disabled:opacity-30">{loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="flex gap-2"><RefreshCw className="w-4 h-4" />Refresh FanDuel Odds</span>}</button><button type="button" onClick={randomize} disabled={!cache || loading} className="border border-border px-5 py-3 font-bold uppercase disabled:opacity-30">Randomize From Cache</button><span className={`text-xs ${cacheFresh ? "text-green-500" : "text-yellow-500"}`}>{cache ? `${cache.bets.length} eligible bets · refreshed ${new Date(cache.fetchedAt).toLocaleTimeString()}${cacheFresh ? " · fresh" : " · stale"}` : "No cached odds"}</span></div>{cache?.usage && <div className="text-xs text-muted-foreground mt-3">API used: {cache.usage.used ?? "?"} · remaining: {cache.usage.remaining ?? "?"} · last refresh cost: {cache.usage.last ?? "?"}</div>}<p className="text-xs text-muted-foreground mt-2">Randomize From Cache costs no API credits. Refreshing requests {settings.markets.length + settings.customMarkets.split(",").filter(Boolean).length} market credits for FanDuel.</p></section>
+      {error && <div className="border border-red-500 bg-red-500/10 p-3 text-red-500 text-sm">{error}</div>}
+      {currentBets.length ? <><div className="grid lg:grid-cols-3 gap-4"><div className="lg:col-span-2"><BetslipSummary bets={currentBets} lockedBetIds={lockedBetIds} onToggleLock={toggleLock} /></div><div className="space-y-4"><StructureProgress structureCounts={structureCounts} /><BetInsights bets={currentBets} /><button type="button" onClick={submit} className="w-full bg-green-600 text-white p-3 font-bold uppercase">Save as Submitted</button></div></div><RoundRobinCalculator bets={currentBets} bankroll={settings.bankroll} size={settings.roundRobinSize} onBankrollChange={(bankroll) => setSettings({ ...settings, bankroll })} onSizeChange={(roundRobinSize) => setSettings({ ...settings, roundRobinSize })} /></> : <div className="border border-border bg-card p-10 text-center text-muted-foreground">Refresh odds, then randomize a qualifying 11-bet set.</div>}
+    </main>
+  </div>;
 }
