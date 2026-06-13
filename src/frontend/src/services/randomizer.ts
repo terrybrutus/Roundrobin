@@ -51,10 +51,23 @@ function hasValidPlus100Pairing(
 
 async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
   try {
+    console.log("Attempting to fetch sports from The Odds API...");
     const sportsRes = await fetch(
       `https://api.the-odds-api.com/v4/sports/?apiKey=${apiKey}`,
     );
-    if (!sportsRes.ok) throw new Error("Failed to fetch sports");
+
+    console.log(
+      `Sports response status: ${sportsRes.status} ${sportsRes.statusText}`,
+    );
+
+    if (!sportsRes.ok) {
+      const errorText = await sportsRes.text();
+      console.error(`API Error: ${errorText}`);
+      throw new Error(
+        `API returned ${sportsRes.status}: ${errorText.substring(0, 200)}`,
+      );
+    }
+
     const sports = await sportsRes.json();
     console.log(`Fetched ${sports.length} sports`);
 
