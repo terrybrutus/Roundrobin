@@ -1,5 +1,5 @@
-import { History, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, History, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { randomizeRoundRobin } from "../services/randomizer";
 import type { Bet } from "../types";
 import { BetslipSummary } from "./BetslipSummary";
@@ -22,6 +22,31 @@ export default function RoundRobinApp() {
   const [history, setHistory] = useState<RoundRobinSet[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [lockedBetIds, setLockedBetIds] = useState<Set<string>>(new Set());
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
+
+  // Intercept console.log for debugging
+  useEffect(() => {
+    const originalLog = console.log;
+    const originalError = console.error;
+
+    console.log = (...args: unknown[]) => {
+      originalLog(...args);
+      const msg = args.map((a) => String(a)).join(" ");
+      setDebugLogs((prev) => [...prev.slice(-20), msg]); // Keep last 20 logs
+    };
+
+    console.error = (...args: unknown[]) => {
+      originalError(...args);
+      const msg = `❌ ${args.map((a) => String(a)).join(" ")}`;
+      setDebugLogs((prev) => [...prev.slice(-20), msg]);
+    };
+
+    return () => {
+      console.log = originalLog;
+      console.error = originalError;
+    };
+  }, []);
 
   const handleApiKeySubmit = (key: string) => {
     setApiKey(key);
@@ -224,6 +249,43 @@ export default function RoundRobinApp() {
           </>
         )}
       </main>
+
+      {/* Debug Panel */}
+      {apiKey && (
+        <div className="fixed bottom-0 right-0 w-full md:w-96 max-h-48 bg-background border-t border-l border-border overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowDebug(!showDebug)}
+            className="w-full px-4 py-2 flex items-center justify-between bg-accent hover:bg-accent/80 text-xs font-semibold uppercase"
+          >
+            <span>Debug Console</span>
+            <ChevronDown
+              className={`w-4 h-4 transition-transform ${
+                showDebug ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+
+          {showDebug && (
+            <div className="overflow-y-auto max-h-44 p-2 bg-black text-green-400 font-mono text-xs space-y-1">
+              {debugLogs.length === 0 ? (
+                <div className="text-muted-foreground">
+                  No logs yet. Click Randomize to see API activity.
+                </div>
+              ) : (
+                debugLogs.map((log, i) => (
+                  <div
+                    key={`${i}-${log.substring(0, 20)}`}
+                    className="text-green-400 break-words"
+                  >
+                    {log}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-border bg-card px-4 py-4 text-center">
