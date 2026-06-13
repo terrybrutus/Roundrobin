@@ -19,6 +19,14 @@ export interface Outcome {
   point?: number;
 }
 
+export interface Bookmaker {
+  key: string;
+  title: string;
+  last_update: string;
+  link?: string;
+  markets: Market[];
+}
+
 export interface GameOdds {
   id: string;
   sport_key: string;
@@ -26,8 +34,7 @@ export interface GameOdds {
   commence_time: string;
   home_team: string;
   away_team: string;
-  markets: Market[];
-  links?: string[];
+  bookmakers: Bookmaker[];
 }
 
 export interface Bet {
