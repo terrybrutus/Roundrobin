@@ -52,9 +52,11 @@ function hasValidPlus100Pairing(
 async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
   try {
     const sportsRes = await fetch(
-      `https://api.the-odds-api.com/v4/sports/?apiKey=${apiKey}`,
+      `https://api.the-odds-api.com/v4/sports/?apiKey=${encodeURIComponent(apiKey)}`,
     );
-    if (!sportsRes.ok) throw new Error("Failed to fetch sports");
+    if (!sportsRes.ok) {
+      throw new Error(`Failed to fetch sports (${sportsRes.status})`);
+    }
     const sports = await sportsRes.json();
     console.log(`Fetched ${sports.length} sports`);
 
@@ -63,20 +65,25 @@ async function fetchAllGames(apiKey: string): Promise<Map<string, GameOdds[]>> {
     for (const sport of sports) {
       if (!sport.active) continue;
 
+      const query = new URLSearchParams({
+        apiKey,
+        regions: "us",
+        markets: "h2h",
+        oddsFormat: "american",
+        includeLinks: "true",
+      });
       const gamesRes = await fetch(
-        `https://api.the-odds-api.com/v4/sports/${sport.key}/events?apiKey=${apiKey}&includeLinks=true`,
+        `https://api.the-odds-api.com/v4/sports/${sport.key}/odds?${query}`,
       );
 
       if (gamesRes.ok) {
-        const games = await gamesRes.json();
-        console.log(`  ${sport.sport_title}: ${games.length} games`);
+        const games: GameOdds[] = await gamesRes.json();
+        console.log(`  ${sport.title}: ${games.length} games`);
         if (games.length > 0) {
           gamesByMarket.set(sport.key, games);
         }
       } else {
-        console.log(
-          `  ${sport.sport_title}: fetch failed (${gamesRes.status})`,
-        );
+        console.log(`  ${sport.title}: fetch failed (${gamesRes.status})`);
       }
     }
 
@@ -100,44 +107,41 @@ function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
 
   for (const [, games] of gamesByMarket) {
     for (const game of games) {
-      for (const market of game.markets || []) {
-        for (const outcome of market.outcomes || []) {
-          totalOutcomes++;
+      for (const bookmaker of game.bookmakers || []) {
+        for (const market of bookmaker.markets || []) {
+          for (const outcome of market.outcomes || []) {
+            totalOutcomes++;
 
-          if (!isValidOdds(outcome.price)) {
-            invalidOdds++;
-            continue;
-          }
+            if (!isValidOdds(outcome.price)) {
+              invalidOdds++;
+              continue;
+            }
 
-          const category = getCategory(outcome.price);
-          const betKey = `${game.home_team}|${game.away_team}|${market.key}|${outcome.name}|${outcome.price}`;
+            const category = getCategory(outcome.price);
+            const betKey = `${game.home_team}|${game.away_team}|${market.key}|${outcome.name}|${outcome.price}`;
 
-          if (seenBets.has(betKey)) continue;
-          seenBets.add(betKey);
+            if (seenBets.has(betKey)) continue;
+            seenBets.add(betKey);
 
-          // Validate +100 bets have proper pairing
-          if (category === "plus100") {
-            if (!hasValidPlus100Pairing(outcome, market)) {
-              console.log(
-                `  Rejected +100: ${game.home_team} vs ${game.away_team} - ${outcome.name} @ ${outcome.price}`,
-              );
+            if (
+              category === "plus100" &&
+              !hasValidPlus100Pairing(outcome, market)
+            ) {
               invalidPairing++;
               continue;
             }
+
+            valid++;
+            allBets.push({
+              sport: game.sport_title,
+              game: `${game.home_team} vs ${game.away_team}`,
+              market: market.key,
+              selection: outcome.name,
+              odds: outcome.price,
+              link: bookmaker.link,
+              marketType: market.key,
+            });
           }
-
-          valid++;
-          const bet: RawBet = {
-            sport: game.sport_title,
-            game: `${game.home_team} vs ${game.away_team}`,
-            market: market.key,
-            selection: outcome.name,
-            odds: outcome.price,
-            link: game.links?.[0],
-            marketType: market.key,
-          };
-
-          allBets.push(bet);
         }
       }
     }
@@ -145,7 +149,7 @@ function extractValidBets(gamesByMarket: Map<string, GameOdds[]>): RawBet[] {
 
   console.log(`Bet extraction: ${totalOutcomes} outcomes`);
   console.log(
-    `  ✓ Valid odds: ${valid}, ✗ Invalid odds: ${invalidOdds}, ✗ Invalid +100 pairing: ${invalidPairing}`,
+    `Valid odds: ${valid}, invalid odds: ${invalidOdds}, invalid +100 pairing: ${invalidPairing}`,
   );
   console.log(`Final valid bets: ${allBets.length}`);
 
@@ -196,7 +200,6 @@ function buildRoundRobin(
     }
   }
 
-  // Shuffle each category
   for (const cat in categorized) {
     for (let i = categorized[cat].length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -207,7 +210,6 @@ function buildRoundRobin(
     }
   }
 
-  // Fill remaining slots
   for (const struct of STRUCTURE) {
     const cat = struct.category;
     const fillCount = needed[cat];
