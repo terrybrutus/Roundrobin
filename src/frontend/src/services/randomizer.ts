@@ -253,54 +253,92 @@ function canAdd(candidate: Bet, result: Bet[], settings: AppSettings): boolean {
   return true;
 }
 
+function categoryCount(bets: Bet[], category: string): number {
+  return bets.filter((bet) => getCategory(bet.odds) === category).length;
+}
+
+function poolShortage(allBets: Bet[], lockedBets: Bet[]): string | null {
+  const shortages = STRUCTURE.flatMap((item) => {
+    const locked = categoryCount(lockedBets, item.category);
+    const required = Math.max(0, item.count - locked);
+    const available = categoryCount(
+      allBets.filter(
+        (bet) => !lockedBets.some((lockedBet) => lockedBet.id === bet.id),
+      ),
+      item.category,
+    );
+    return available < required
+      ? [`${item.category}: ${available} available, ${required} needed`]
+      : [];
+  });
+  return shortages.length ? shortages.join("; ") : null;
+}
+
+function tryBuildRoundRobin(
+  allBets: Bet[],
+  lockedBets: Bet[],
+  settings: AppSettings,
+  attempt: number,
+): Bet[] | null {
+  const result = [...lockedBets];
+  const used = new Set(result.map((bet) => bet.id));
+  const remaining = STRUCTURE.map((item) => ({
+    ...item,
+    needed: Math.max(0, item.count - categoryCount(result, item.category)),
+    candidates: allBets
+      .filter(
+        (bet) => getCategory(bet.odds) === item.category && !used.has(bet.id),
+      )
+      .sort(
+        (a, b) =>
+          priorityScore(b, settings) -
+          priorityScore(a, settings) +
+          (((attempt + 1) * 17) % 31),
+      ),
+  })).sort(
+    (a, b) => a.candidates.length - a.needed - (b.candidates.length - b.needed),
+  );
+
+  for (const item of remaining) {
+    for (const bet of item.candidates) {
+      if (categoryCount(result, item.category) >= item.count) break;
+      if (!canAdd(bet, result, settings)) continue;
+      result.push({ ...bet, id: bet.id || crypto.randomUUID() });
+      used.add(bet.id);
+    }
+    if (categoryCount(result, item.category) < item.count) return null;
+  }
+  if (
+    new Set(result.map((bet) => bet.eventId)).size <
+    settings.minimumUniqueEvents
+  )
+    return null;
+  return result;
+}
+
 export function randomizeRoundRobin(
   allBets: Bet[],
   lockedBetIds: Set<string>,
   currentBets: Bet[],
   settings: AppSettings,
 ): Bet[] {
-  const result = currentBets.filter((bet) => lockedBetIds.has(bet.id || ""));
-  const used = new Set(result.map((bet) => bet.id));
-  const counts: Record<string, number> = {
-    minus200: 0,
-    minus300: 0,
-    minus500: 0,
-    plus100: 0,
-  };
-  for (const bet of result) counts[getCategory(bet.odds)]++;
-
-  for (const item of STRUCTURE) {
-    const candidates = allBets
-      .filter(
-        (bet) => getCategory(bet.odds) === item.category && !used.has(bet.id),
-      )
-      .sort((a, b) => priorityScore(b, settings) - priorityScore(a, settings));
-    for (const bet of candidates) {
-      if (
-        result.filter((entry) => getCategory(entry.odds) === item.category)
-          .length >= item.count
-      )
-        break;
-      if (!canAdd(bet, result, settings)) continue;
-      result.push({ ...bet, id: bet.id || crypto.randomUUID() });
-      used.add(bet.id);
-    }
-    if (
-      result.filter((entry) => getCategory(entry.odds) === item.category)
-        .length < item.count
-    ) {
-      throw new Error(
-        `Diversification rules left too few ${item.category} bets. Loosen maximum-per-event or maximum-per-sport settings.`,
-      );
-    }
+  const lockedBets = currentBets.filter((bet) =>
+    lockedBetIds.has(bet.id || ""),
+  );
+  const shortage = poolShortage(allBets, lockedBets);
+  if (shortage) {
+    throw new Error(
+      `The refreshed odds pool cannot fill the required 11-leg structure (${shortage}). Changing diversification settings will not fix this; widen the timing window, enable more markets, allow bets without deep links, or refresh later.`,
+    );
   }
 
-  if (
-    new Set(result.map((bet) => bet.eventId)).size <
-    settings.minimumUniqueEvents
-  ) {
+  let result: Bet[] | null = null;
+  for (let attempt = 0; attempt < 100 && !result; attempt++) {
+    result = tryBuildRoundRobin(allBets, lockedBets, settings, attempt);
+  }
+  if (!result) {
     throw new Error(
-      `Generated set did not reach the required ${settings.minimumUniqueEvents} unique events. Loosen filters or refresh more markets.`,
+      `The pool has enough odds in each category, but no combination satisfies max ${settings.maxPerEvent}/event, max ${settings.maxPerSport}/sport, and opposing-selection rules. Increase those maximums, lower minimum unique events, or disable opposing-selection avoidance.`,
     );
   }
   return result;
