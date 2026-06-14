@@ -72,6 +72,7 @@ export interface OddsCache {
   bets: Bet[];
   fetchedAt: string;
   usage: ApiUsage;
+  notice?: string;
 }
 
 export type TimingMode = "upcoming" | "live" | "mixed";

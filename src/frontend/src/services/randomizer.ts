@@ -13,8 +13,9 @@ const STRUCTURE = [
   { category: "minus500", count: 1 },
   { category: "plus100", count: 5 },
 ];
+const FALLBACK_TIME_WINDOW_HOURS = 72;
 
-function getCategory(odds: number): string {
+export function getOddsCategory(odds: number): string {
   const absOdds = Math.abs(odds);
   if (odds > 0) return "plus100";
   if (absOdds <= 250) return "minus200";
@@ -92,7 +93,7 @@ function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
         for (const outcome of market.outcomes || []) {
           if (!isValidOdds(outcome.price)) continue;
           if (
-            getCategory(outcome.price) === "plus100" &&
+            getOddsCategory(outcome.price) === "plus100" &&
             !hasValidPlus100Pairing(outcome, market)
           ) {
             continue;
@@ -158,13 +159,31 @@ export async function refreshOdds(
   const usage = parseUsage(response);
   if (!response.ok) throw new Error(explainApiFailure(response, usage));
   const games: GameOdds[] = await response.json();
-  const bets = extractValidBets(games, settings);
+  let bets = extractValidBets(games, settings);
+  let notice: string | undefined;
+  const configuredShortage = poolShortage(bets, []);
+  if (
+    configuredShortage &&
+    settings.timingMode !== "live" &&
+    settings.timeWindowHours < FALLBACK_TIME_WINDOW_HOURS
+  ) {
+    const fallbackSettings = {
+      ...settings,
+      timeWindowHours: FALLBACK_TIME_WINDOW_HOURS,
+    };
+    const fallbackBets = extractValidBets(games, fallbackSettings);
+    const fallbackShortage = poolShortage(fallbackBets, []);
+    bets = fallbackBets;
+    notice = fallbackShortage
+      ? `The configured ${settings.timeWindowHours}-hour window could not fill the fixed 11-leg structure (${configuredShortage}). The refresh expanded to ${FALLBACK_TIME_WINDOW_HOURS} hours but is still short (${fallbackShortage}).`
+      : `The configured ${settings.timeWindowHours}-hour window could not fill the fixed 11-leg structure (${configuredShortage}), so this refresh included eligible events up to ${FALLBACK_TIME_WINDOW_HOURS} hours away. Picks are still prioritized by your generation strategy.`;
+  }
   if (bets.length === 0) {
     throw new Error(
       `No eligible ${settings.bookmaker} bets matched the timing, link, and odds filters. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
     );
   }
-  return { bets, usage, fetchedAt: new Date().toISOString() };
+  return { bets, usage, fetchedAt: new Date().toISOString(), notice };
 }
 
 export async function refreshSelectedBets(
@@ -254,7 +273,7 @@ function canAdd(candidate: Bet, result: Bet[], settings: AppSettings): boolean {
 }
 
 function categoryCount(bets: Bet[], category: string): number {
-  return bets.filter((bet) => getCategory(bet.odds) === category).length;
+  return bets.filter((bet) => getOddsCategory(bet.odds) === category).length;
 }
 
 function poolShortage(allBets: Bet[], lockedBets: Bet[]): string | null {
@@ -287,7 +306,8 @@ function tryBuildRoundRobin(
     needed: Math.max(0, item.count - categoryCount(result, item.category)),
     candidates: allBets
       .filter(
-        (bet) => getCategory(bet.odds) === item.category && !used.has(bet.id),
+        (bet) =>
+          getOddsCategory(bet.odds) === item.category && !used.has(bet.id),
       )
       .sort(
         (a, b) =>
@@ -328,7 +348,7 @@ export function randomizeRoundRobin(
   const shortage = poolShortage(allBets, lockedBets);
   if (shortage) {
     throw new Error(
-      `The refreshed odds pool cannot fill the required 11-leg structure (${shortage}). Changing diversification settings will not fix this; widen the timing window, enable more markets, allow bets without deep links, or refresh later.`,
+      `The refreshed odds pool cannot fill the required 11-leg structure (${shortage}). Most spreads and totals are near -110 and do not qualify for the fixed negative-price buckets, so enable more markets, allow bets without deep links, or refresh later.`,
     );
   }
 

@@ -2,6 +2,7 @@ import { History, Loader2, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   estimatedRefreshCost,
+  getOddsCategory,
   randomizeRoundRobin,
   refreshOdds,
   refreshSelectedBets,
@@ -189,23 +190,19 @@ export default function RoundRobinApp() {
     setLockedBetIds(new Set());
     setView("main");
   };
-  const category = (odds: number) =>
-    odds > 0
-      ? "plus100"
-      : Math.abs(odds) <= 250
-        ? "minus200"
-        : Math.abs(odds) <= 350
-          ? "minus300"
-          : "minus500";
   const structureCounts = {
-    minus200: currentBets.filter((bet) => category(bet.odds) === "minus200")
-      .length,
-    minus300: currentBets.filter((bet) => category(bet.odds) === "minus300")
-      .length,
-    minus500: currentBets.filter((bet) => category(bet.odds) === "minus500")
-      .length,
-    plus100: currentBets.filter((bet) => category(bet.odds) === "plus100")
-      .length,
+    minus200: currentBets.filter(
+      (bet) => getOddsCategory(bet.odds) === "minus200",
+    ).length,
+    minus300: currentBets.filter(
+      (bet) => getOddsCategory(bet.odds) === "minus300",
+    ).length,
+    minus500: currentBets.filter(
+      (bet) => getOddsCategory(bet.odds) === "minus500",
+    ).length,
+    plus100: currentBets.filter(
+      (bet) => getOddsCategory(bet.odds) === "plus100",
+    ).length,
   };
   if (view === "settings")
     return (
@@ -299,6 +296,9 @@ export default function RoundRobinApp() {
               {cache.usage.remaining ?? "?"} · last cost:{" "}
               {cache.usage.last ?? "?"}
             </p>
+          )}
+          {cache?.notice && (
+            <p className="text-xs text-yellow-500 mt-3">{cache.notice}</p>
           )}
         </section>
         {error && (
