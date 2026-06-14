@@ -18,7 +18,7 @@ function getCategory(odds: number): string {
   const absOdds = Math.abs(odds);
   if (odds > 0) return "plus100";
   if (absOdds <= 250) return "minus200";
-  if (absOdds <= 350) return "minus300";
+  if (absOdds < 450) return "minus300";
   return "minus500";
 }
 
@@ -27,7 +27,7 @@ function isValidOdds(odds: number): boolean {
   if (odds > 0) return absOdds >= 80 && absOdds <= 120;
   return (
     (absOdds >= 150 && absOdds <= 250) ||
-    (absOdds >= 250 && absOdds <= 350) ||
+    (absOdds > 250 && absOdds < 450) ||
     (absOdds >= 450 && absOdds <= 550)
   );
 }
