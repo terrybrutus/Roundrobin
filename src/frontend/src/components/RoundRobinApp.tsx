@@ -2,7 +2,6 @@ import { History, Loader2, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   estimatedRefreshCost,
-  getOddsCategory,
   randomizeRoundRobin,
   refreshOdds,
   refreshSelectedBets,
@@ -13,7 +12,6 @@ import { BetslipSummary } from "./BetslipSummary";
 import { HistoryView } from "./HistoryView";
 import { RoundRobinCalculator } from "./RoundRobinCalculator";
 import { SettingsView } from "./SettingsView";
-import { StructureProgress } from "./StructureProgress";
 
 const SETTINGS_KEY = "roundrobin-settings-v3";
 const CACHE_KEY = "roundrobin-odds-cache-v3";
@@ -26,13 +24,13 @@ const defaults: AppSettings = {
   bookmaker: "fanduel",
   markets: ["h2h", "spreads", "totals"],
   customMarkets: "",
-  timeWindowHours: 12,
+  timeWindowHours: 24,
   minimumLeadMinutes: 10,
   cacheMinutes: 10,
   timingMode: "upcoming",
   strategyMode: "soonest",
   todayFirst: true,
-  requireDeepLink: true,
+  requireDeepLink: false,
   propsMode: false,
   propEventLimit: 3,
   maxPerEvent: 2,
@@ -107,7 +105,7 @@ export default function RoundRobinApp() {
       : estimatedRefreshCost(settings);
     const costMessage = selectedOnly
       ? `Estimated Odds API cost: ${cost} credits. Continue?`
-      : `Odds API cost is about ${cost} credits per sport with events. Refresh stops once the 11-leg structure is fillable. Continue?`;
+      : `Estimated simple refresh cost: ${cost} credits. Continue?`;
     if (!window.confirm(costMessage)) return;
     try {
       requestInFlight.current = true;
@@ -196,20 +194,6 @@ export default function RoundRobinApp() {
     setLockedBetIds(new Set());
     setView("main");
   };
-  const structureCounts = {
-    minus200: currentBets.filter(
-      (bet) => getOddsCategory(bet.odds) === "minus200",
-    ).length,
-    minus300: currentBets.filter(
-      (bet) => getOddsCategory(bet.odds) === "minus300",
-    ).length,
-    minus500: currentBets.filter(
-      (bet) => getOddsCategory(bet.odds) === "minus500",
-    ).length,
-    plus100: currentBets.filter(
-      (bet) => getOddsCategory(bet.odds) === "plus100",
-    ).length,
-  };
   if (view === "settings")
     return (
       <SettingsView
@@ -231,8 +215,8 @@ export default function RoundRobinApp() {
               Round Robin Workbench
             </h1>
             <p className="text-sm text-muted-foreground">
-              {settings.timingMode} · {settings.strategyMode} · max{" "}
-              {settings.maxPerEvent}/event
+              {settings.timingMode} · {settings.strategyMode} · opposing picks{" "}
+              {settings.avoidOpposingSelections ? "blocked" : "allowed"}
             </p>
           </div>
           <div className="flex gap-2">
@@ -290,8 +274,8 @@ export default function RoundRobinApp() {
               Recheck Selected 11
             </button>
             <span className="text-xs text-muted-foreground">
-              Full refresh: about {estimatedRefreshCost(settings)} credits per
-              sport with events · selected recheck estimate:{" "}
+              Full refresh estimate: {estimatedRefreshCost(settings)} credits ·
+              selected recheck estimate:{" "}
               {estimatedRefreshCost(settings) *
                 new Set(currentBets.map((bet) => bet.eventId)).size}
             </span>
@@ -325,7 +309,6 @@ export default function RoundRobinApp() {
                 />
               </div>
               <div className="space-y-4">
-                <StructureProgress structureCounts={structureCounts} />
                 <BetInsights bets={currentBets} />
                 <button
                   type="button"
@@ -350,7 +333,7 @@ export default function RoundRobinApp() {
           </>
         ) : (
           <div className="border border-border bg-card p-10 text-center text-muted-foreground">
-            Refresh odds, then generate a diversified set.
+            Refresh odds, then generate an 11-leg set for Gambly.
           </div>
         )}
       </main>

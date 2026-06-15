@@ -1,19 +1,6 @@
-import type {
-  ApiUsage,
-  AppSettings,
-  Bet,
-  GameOdds,
-  OddsCache,
-  OddsData,
-} from "../types";
+import type { ApiUsage, AppSettings, Bet, GameOdds, OddsCache } from "../types";
 
-const STRUCTURE = [
-  { category: "minus200", count: 3 },
-  { category: "minus300", count: 2 },
-  { category: "minus500", count: 1 },
-  { category: "plus100", count: 5 },
-];
-const SPORT_REQUEST_DELAY_MS = 350;
+const ROUND_ROBIN_LEGS = 11;
 const FEATURED_MARKETS = new Set(["h2h", "spreads", "totals"]);
 
 export function getOddsCategory(odds: number): string {
@@ -25,13 +12,7 @@ export function getOddsCategory(odds: number): string {
 }
 
 function isValidOdds(odds: number): boolean {
-  const absOdds = Math.abs(odds);
-  if (odds > 0) return absOdds >= 80 && absOdds <= 120;
-  return (
-    (absOdds >= 150 && absOdds <= 250) ||
-    (absOdds > 250 && absOdds < 450) ||
-    (absOdds >= 450 && absOdds <= 550)
-  );
+  return Number.isFinite(odds) && odds !== 0;
 }
 
 function parseUsage(response: Response): ApiUsage {
@@ -72,10 +53,6 @@ function explainApiFailure(response: Response, usage: ApiUsage): string {
   return `The Odds API request failed (${response.status}).`;
 }
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 async function fetchWithRateLimitRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -88,20 +65,10 @@ async function fetchWithRateLimitRetry(
     const delay = Number.isFinite(retryAfter)
       ? Math.max(1_000, retryAfter * 1_000)
       : 1_000 * 2 ** attempt;
-    await wait(delay);
+    await new Promise((resolve) => setTimeout(resolve, delay));
     response = await fetch(input, init);
   }
   return response;
-}
-
-function eventAllowed(startsAt: number, settings: AppSettings): boolean {
-  const now = Date.now();
-  const live = startsAt <= now;
-  if (settings.timingMode === "upcoming" && live) return false;
-  if (settings.timingMode === "live" && !live) return false;
-  if (!live && startsAt < now + settings.minimumLeadMinutes * 60_000)
-    return false;
-  return startsAt <= now + settings.timeWindowHours * 3_600_000;
 }
 
 function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
@@ -111,7 +78,6 @@ function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
 
   for (const game of games) {
     const startsAt = new Date(game.commence_time).getTime();
-    if (!eventAllowed(startsAt, settings)) continue;
 
     for (const bookmaker of game.bookmakers || []) {
       if (bookmaker.key !== settings.bookmaker) continue;
@@ -122,7 +88,6 @@ function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
           if (seen.has(key)) continue;
           seen.add(key);
           const link = outcome.link || market.link || bookmaker.link;
-          if (settings.requireDeepLink && !link) continue;
           bets.push({
             id: key,
             eventId: game.id,
@@ -148,13 +113,10 @@ function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
 }
 
 function requestedMarkets(settings: AppSettings): string[] {
-  return [
-    ...settings.markets,
-    ...settings.customMarkets
-      .split(",")
-      .map((market) => market.trim())
-      .filter(Boolean),
-  ];
+  const markets = settings.markets.filter((market) =>
+    FEATURED_MARKETS.has(market),
+  );
+  return markets.length ? markets : ["h2h"];
 }
 
 export function estimatedRefreshCost(settings: AppSettings): number {
@@ -172,110 +134,25 @@ function baseOddsQuery(apiKey: string, settings: AppSettings): URLSearchParams {
   });
 }
 
-function sportOddsQuery(
-  apiKey: string,
-  settings: AppSettings,
-  hasOutrights: boolean,
-): URLSearchParams {
-  const now = Date.now();
-  const query = baseOddsQuery(apiKey, settings);
-  const markets = hasOutrights
-    ? ["outrights"]
-    : requestedMarkets(settings).filter((market) =>
-        FEATURED_MARKETS.has(market),
-      );
-  query.set("markets", [...new Set(markets)].join(","));
-  query.set(
-    "commenceTimeTo",
-    new Date(now + settings.timeWindowHours * 3_600_000).toISOString(),
-  );
-  if (settings.timingMode === "upcoming") {
-    query.set(
-      "commenceTimeFrom",
-      new Date(now + settings.minimumLeadMinutes * 60_000).toISOString(),
-    );
-  }
-  return query;
-}
-
-function poolMeetsGenerationMinimums(
-  bets: Bet[],
-  settings: AppSettings,
-): boolean {
-  if (poolShortage(bets, []) !== null) return false;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    if (tryBuildRoundRobin(bets, [], settings, attempt)) return true;
-  }
-  return false;
-}
-
 export async function refreshOdds(
   apiKey: string,
   settings: AppSettings,
   previousUsage?: ApiUsage,
 ): Promise<OddsCache> {
-  const sportsResponse = await fetchWithRateLimitRetry(
-    `https://api.the-odds-api.com/v4/sports?apiKey=${encodeURIComponent(apiKey)}`,
+  const response = await fetchWithRateLimitRetry(
+    `https://api.the-odds-api.com/v4/sports/upcoming/odds?${baseOddsQuery(apiKey, settings)}`,
   );
   let usage = previousUsage
-    ? mergeUsage(previousUsage, parseUsage(sportsResponse))
-    : parseUsage(sportsResponse);
-  if (!sportsResponse.ok)
-    throw new Error(explainApiFailure(sportsResponse, usage));
-  const sports: OddsData[] = await sportsResponse.json();
-  const includeOutrights = requestedMarkets(settings).includes("outrights");
-  const activeSports = sports.filter(
-    (sport) => sport.active && (!sport.has_outrights || includeOutrights),
-  );
-
-  const games: GameOdds[] = [];
-  let bets: Bet[] = [];
-  let checkedSports = 0;
-  let sportsWithOdds = 0;
-  const failedSports: string[] = [];
-  for (const sport of activeSports) {
-    const sportMarkets = sport.has_outrights
-      ? includeOutrights
-      : requestedMarkets(settings).some((market) =>
-          FEATURED_MARKETS.has(market),
-        );
-    if (!sportMarkets) continue;
-    if (checkedSports > 0) await wait(SPORT_REQUEST_DELAY_MS);
-    const response = await fetchWithRateLimitRetry(
-      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds?${sportOddsQuery(apiKey, settings, Boolean(sport.has_outrights))}`,
-    );
-    checkedSports++;
-    const responseUsage = parseUsage(response);
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error(
-          explainApiFailure(response, mergeUsage(usage, responseUsage)),
-        );
-      }
-      failedSports.push(`${sport.key} (${response.status})`);
-      continue;
-    }
-    usage = mergeUsage(usage, responseUsage);
-    const sportGames = (await response.json()) as GameOdds[];
-    if (!sportGames.length) continue;
-    sportsWithOdds++;
-    games.push(...sportGames);
-    bets = extractValidBets(games, settings);
-    if (poolMeetsGenerationMinimums(bets, settings)) break;
-  }
-
-  const withoutLinkRequirement = settings.requireDeepLink
-    ? extractValidBets(games, { ...settings, requireDeepLink: false })
-    : bets;
-  const removedForMissingLinks = withoutLinkRequirement.length - bets.length;
-  const remainingShortage = poolShortage(bets, []);
-  const failureNotice = failedSports.length
-    ? ` Skipped failed sport requests: ${failedSports.slice(0, 5).join(", ")}${failedSports.length > 5 ? `, plus ${failedSports.length - 5} more` : ""}.`
-    : "";
-  const notice = `Checked ${checkedSports} active sport odds endpoints; ${sportsWithOdds} returned events in the configured window.${failureNotice} Retained ${bets.length} eligible bets${removedForMissingLinks ? `; the deep-link requirement removed ${removedForMissingLinks}` : ""}.${remainingShortage ? ` Remaining shortage: ${remainingShortage}.` : ""}`;
+    ? mergeUsage(previousUsage, parseUsage(response))
+    : parseUsage(response);
+  if (!response.ok) throw new Error(explainApiFailure(response, usage));
+  const games = (await response.json()) as GameOdds[];
+  const bets = extractValidBets(games, settings);
+  const links = bets.filter((bet) => bet.link).length;
+  const notice = `Simple refresh returned ${games.length} events and ${bets.length} usable bets. ${links} include sportsbook links; Gambly output works for every generated leg.`;
   if (bets.length === 0) {
     throw new Error(
-      `No eligible ${settings.bookmaker} bets remained after directly checking ${checkedSports} active sport odds endpoints; ${sportsWithOdds} returned events in the configured timing window.${failureNotice} ${removedForMissingLinks ? `The deep-link requirement removed ${removedForMissingLinks} otherwise-valid bets. ` : ""}Remaining API credits: ${usage.remaining ?? "unknown"}.`,
+      `The simple upcoming refresh returned no usable ${settings.bookmaker} bets. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
     );
   }
   return { bets, usage, fetchedAt: new Date().toISOString(), notice };
@@ -315,11 +192,17 @@ function priorityScore(bet: Bet, settings: AppSettings): number {
   const now = Date.now();
   const startsAt = new Date(bet.commenceTime || 0).getTime();
   const minutesAway = Math.max(0, (startsAt - now) / 60_000);
+  const preferredWindowMinutes = settings.timeWindowHours * 60;
   const updateAge = bet.lastUpdate
     ? Math.max(0, (now - new Date(bet.lastUpdate).getTime()) / 60_000)
     : 120;
   if (settings.strategyMode === "random") return Math.random() * 100;
   let score = 10_000 - minutesAway;
+  if (settings.timingMode === "live") score += bet.isLive ? 2_000 : -2_000;
+  if (settings.timingMode === "upcoming") score += bet.isLive ? -2_000 : 2_000;
+  if (minutesAway > preferredWindowMinutes)
+    score -= minutesAway - preferredWindowMinutes;
+  if (!bet.isLive && minutesAway < settings.minimumLeadMinutes) score -= 1_000;
   if (
     settings.todayFirst &&
     new Date(startsAt).toDateString() === new Date().toDateString()
@@ -344,49 +227,31 @@ function opposingSelection(candidate: Bet, result: Bet[]): boolean {
 }
 
 function canAdd(candidate: Bet, result: Bet[], settings: AppSettings): boolean {
-  if (
-    result.filter((bet) => bet.eventId === candidate.eventId).length >=
-    settings.maxPerEvent
-  )
-    return false;
-  if (
-    result.filter((bet) => bet.sport === candidate.sport).length >=
-    settings.maxPerSport
-  )
-    return false;
   if (settings.avoidOpposingSelections && opposingSelection(candidate, result))
     return false;
   return true;
 }
 
-function categoryCount(bets: Bet[], category: string): number {
-  return bets.filter((bet) => getOddsCategory(bet.odds) === category).length;
-}
-
-function poolShortage(allBets: Bet[], lockedBets: Bet[]): string | null {
-  const shortages = STRUCTURE.flatMap((item) => {
-    const locked = categoryCount(lockedBets, item.category);
-    const required = Math.max(0, item.count - locked);
-    const available = categoryCount(
-      allBets.filter(
-        (bet) => !lockedBets.some((lockedBet) => lockedBet.id === bet.id),
-      ),
-      item.category,
-    );
-    return available < required
-      ? [`${item.category}: ${available} available, ${required} needed`]
-      : [];
-  });
-  return shortages.length ? shortages.join("; ") : null;
-}
-
 function rankCandidates(
   candidates: Bet[],
+  selected: Bet[],
   settings: AppSettings,
   attempt: number,
 ): Bet[] {
   const ranked = candidates
-    .map((bet) => ({ bet, score: priorityScore(bet, settings) }))
+    .map((bet) => {
+      const eventCount = selected.filter(
+        (selectedBet) => selectedBet.eventId === bet.eventId,
+      ).length;
+      const sportCount = selected.filter(
+        (selectedBet) => selectedBet.sport === bet.sport,
+      ).length;
+      return {
+        bet,
+        score:
+          priorityScore(bet, settings) - eventCount * 1_000 - sportCount * 100,
+      };
+    })
     .sort((a, b) => b.score - a.score)
     .map(({ bet }) => bet);
   if (!ranked.length) return ranked;
@@ -402,36 +267,20 @@ function tryBuildRoundRobin(
 ): Bet[] | null {
   const result = [...lockedBets];
   const used = new Set(result.map((bet) => bet.id));
-  const remaining = STRUCTURE.map((item) => ({
-    ...item,
-    needed: Math.max(0, item.count - categoryCount(result, item.category)),
-    candidates: rankCandidates(
+  while (result.length < ROUND_ROBIN_LEGS) {
+    const candidate = rankCandidates(
       allBets.filter(
-        (bet) =>
-          getOddsCategory(bet.odds) === item.category && !used.has(bet.id),
+        (bet) => !used.has(bet.id) && canAdd(bet, result, settings),
       ),
+      result,
       settings,
-      attempt,
-    ),
-  })).sort(
-    (a, b) => a.candidates.length - a.needed - (b.candidates.length - b.needed),
-  );
-
-  for (const item of remaining) {
-    for (const bet of item.candidates) {
-      if (categoryCount(result, item.category) >= item.count) break;
-      if (!canAdd(bet, result, settings)) continue;
-      result.push({ ...bet, id: bet.id || crypto.randomUUID() });
-      used.add(bet.id);
-    }
-    if (categoryCount(result, item.category) < item.count) return null;
+      attempt + result.length,
+    )[0];
+    if (!candidate) return null;
+    result.push({ ...candidate, id: candidate.id || crypto.randomUUID() });
+    used.add(candidate.id);
   }
-  if (
-    new Set(result.map((bet) => bet.eventId)).size <
-    settings.minimumUniqueEvents
-  )
-    return null;
-  return result;
+  return result.slice(0, ROUND_ROBIN_LEGS);
 }
 
 export function randomizeRoundRobin(
@@ -443,12 +292,10 @@ export function randomizeRoundRobin(
   const lockedBets = currentBets.filter((bet) =>
     lockedBetIds.has(bet.id || ""),
   );
-  const shortage = poolShortage(allBets, lockedBets);
-  if (shortage) {
+  if (lockedBets.length > ROUND_ROBIN_LEGS)
     throw new Error(
-      `The refreshed odds pool cannot fill the required 11-leg structure (${shortage}). Review the refresh diagnostics above to see how many sports were checked and whether the deep-link requirement removed otherwise-valid bets.`,
+      `Unlock bets until no more than ${ROUND_ROBIN_LEGS} remain.`,
     );
-  }
 
   let result: Bet[] | null = null;
   for (let attempt = 0; attempt < 100 && !result; attempt++) {
@@ -456,7 +303,7 @@ export function randomizeRoundRobin(
   }
   if (!result) {
     throw new Error(
-      `The pool has enough odds in each category, but no combination satisfies max ${settings.maxPerEvent}/event, max ${settings.maxPerSport}/sport, and opposing-selection rules. Increase those maximums, lower minimum unique events, or disable opposing-selection avoidance.`,
+      `Could not find ${ROUND_ROBIN_LEGS} non-duplicate bets${settings.avoidOpposingSelections ? " without opposing selections" : ""}. Refresh again or enable more markets.`,
     );
   }
   return result;
