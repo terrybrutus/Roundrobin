@@ -1,5 +1,5 @@
 import { History, Loader2, RefreshCw, Settings } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   estimatedRefreshCost,
   getOddsCategory,
@@ -69,6 +69,7 @@ export default function RoundRobinApp() {
   );
   const [lockedBetIds, setLockedBetIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const requestInFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"main" | "settings" | "history">("main");
   useEffect(() => {
@@ -94,6 +95,7 @@ export default function RoundRobinApp() {
   }, [placedBetIds]);
 
   const runRequest = async (selectedOnly: boolean) => {
+    if (requestInFlight.current) return;
     if (!settings.apiKey) {
       setView("settings");
       setError("Add The Odds API key in Settings first.");
@@ -108,6 +110,7 @@ export default function RoundRobinApp() {
       : `Odds API cost is about ${cost} credits per sport with events. Refresh stops once the 11-leg structure is fillable. Continue?`;
     if (!window.confirm(costMessage)) return;
     try {
+      requestInFlight.current = true;
       setLoading(true);
       setError(null);
       const refreshed = selectedOnly
@@ -136,6 +139,7 @@ export default function RoundRobinApp() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Refresh failed");
     } finally {
+      requestInFlight.current = false;
       setLoading(false);
     }
   };
