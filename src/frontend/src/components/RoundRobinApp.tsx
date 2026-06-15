@@ -107,7 +107,7 @@ export default function RoundRobinApp() {
       : estimatedRefreshCost(settings);
     const costMessage = selectedOnly
       ? `Estimated Odds API cost: ${cost} credits. Continue?`
-      : `Estimated simple refresh cost: ${cost} credits. Continue?`;
+      : `Full refresh costs ${cost} credits per sport with events and stops once the required structure is fillable. Continue?`;
     if (!window.confirm(costMessage)) return;
     try {
       requestInFlight.current = true;
@@ -276,8 +276,8 @@ export default function RoundRobinApp() {
               Recheck Selected 11
             </button>
             <span className="text-xs text-muted-foreground">
-              Full refresh estimate: {estimatedRefreshCost(settings)} credits ·
-              selected recheck estimate:{" "}
+              Full refresh: {estimatedRefreshCost(settings)} credits per sport
+              with events; stops when fillable | selected recheck estimate:{" "}
               {estimatedRefreshCost(settings) *
                 new Set(currentBets.map((bet) => bet.eventId)).size}
             </span>
