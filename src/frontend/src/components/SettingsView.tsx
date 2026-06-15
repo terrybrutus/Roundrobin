@@ -13,38 +13,7 @@ const MARKET_OPTIONS = [
   ["h2h", "Moneyline"],
   ["spreads", "Spreads"],
   ["totals", "Totals / O-U"],
-  ["outrights", "Outrights"],
 ] as const;
-const PRESETS: Record<string, Partial<AppSettings>> = {
-  "Pregame Soonest": {
-    timingMode: "upcoming",
-    strategyMode: "soonest",
-    minimumLeadMinutes: 10,
-    timeWindowHours: 12,
-  },
-  "Placement Window": {
-    timingMode: "upcoming",
-    strategyMode: "placement",
-    minimumLeadMinutes: 15,
-    timeWindowHours: 24,
-    maxPerEvent: 1,
-    maxPerSport: 5,
-    minimumUniqueEvents: 8,
-  },
-  "Mixed Live": {
-    timingMode: "mixed",
-    strategyMode: "placement",
-    minimumLeadMinutes: 5,
-    timeWindowHours: 12,
-  },
-  "Live Only": {
-    timingMode: "live",
-    strategyMode: "soonest",
-    minimumLeadMinutes: 0,
-    timeWindowHours: 6,
-  },
-};
-
 interface NumberFieldProps {
   label: string;
   value: number;
@@ -131,21 +100,6 @@ export function SettingsView({
       </header>
       <main className="max-w-3xl mx-auto p-4 space-y-4">
         <section className="border border-border bg-card p-4 space-y-3">
-          <h2 className="font-bold uppercase">Saved strategies</h2>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(PRESETS).map(([name, preset]) => (
-              <button
-                key={name}
-                type="button"
-                onClick={() => onChange({ ...settings, ...preset })}
-                className="border border-border px-3 py-2 text-xs"
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-        </section>
-        <section className="border border-border bg-card p-4 space-y-3">
           <h2 className="font-bold uppercase">API and storage</h2>
           <label htmlFor="odds-api-key" className="block text-xs">
             The Odds API key
@@ -167,7 +121,7 @@ export function SettingsView({
           </label>
         </section>
         <section className="border border-border bg-card p-4 space-y-3">
-          <h2 className="font-bold uppercase">Timing and placement</h2>
+          <h2 className="font-bold uppercase">Generation preferences</h2>
           <div className="grid grid-cols-2 gap-3">
             <label className="text-xs">
               Timing mode
@@ -181,8 +135,8 @@ export function SettingsView({
                 }
                 className="w-full bg-input border border-border p-2 mt-1"
               >
-                <option value="upcoming">Upcoming only</option>
-                <option value="live">Live only</option>
+                <option value="upcoming">Prefer upcoming</option>
+                <option value="live">Prefer live</option>
                 <option value="mixed">Mixed</option>
               </select>
             </label>
@@ -199,7 +153,7 @@ export function SettingsView({
                 className="w-full bg-input border border-border p-2 mt-1"
               >
                 <option value="soonest">Soonest first</option>
-                <option value="placement">Placement window</option>
+                <option value="placement">Freshest / easiest placement</option>
                 <option value="random">Pure random</option>
               </select>
             </label>
@@ -216,17 +170,12 @@ export function SettingsView({
             Prioritize events today
           </label>
           <p className="text-xs text-muted-foreground">
-            Halftime and timeout state is not reliably available. Live mode uses
-            start time and odds freshness.
+            These preferences rank the available bets. They no longer block a
+            valid 11-leg set from being generated.
           </p>
         </section>
         <section className="border border-border bg-card p-4 space-y-3">
-          <h2 className="font-bold uppercase">Diversification</h2>
-          <div className="grid grid-cols-3 gap-3">
-            {numberField("Max per event", "maxPerEvent", 1, 11)}
-            {numberField("Max per sport", "maxPerSport", 1, 11)}
-            {numberField("Minimum unique events", "minimumUniqueEvents", 1, 11)}
-          </div>
+          <h2 className="font-bold uppercase">Selection safety</h2>
           <label className="flex gap-2 items-center text-sm">
             <input
               type="checkbox"
@@ -237,9 +186,14 @@ export function SettingsView({
             />
             Avoid opposing selections in the same market
           </label>
+          <p className="text-xs text-muted-foreground">
+            Event and sport diversity are preferred automatically, but will
+            relax when needed. Opposing selections remain a hard rule when
+            enabled.
+          </p>
         </section>
         <section className="border border-border bg-card p-4 space-y-3">
-          <h2 className="font-bold uppercase">Markets and links</h2>
+          <h2 className="font-bold uppercase">Markets</h2>
           <div className="grid grid-cols-2 gap-2">
             {MARKET_OPTIONS.map(([key, label]) => (
               <label key={key} className="flex gap-2 items-center text-sm">
@@ -259,25 +213,10 @@ export function SettingsView({
               </label>
             ))}
           </div>
-          <label className="block text-xs">
-            Additional market keys
-            <input
-              value={settings.customMarkets}
-              onChange={(event) => update("customMarkets", event.target.value)}
-              className="w-full bg-input border border-border p-2 mt-1"
-              placeholder="player_points,player_rebounds"
-            />
-          </label>
-          <label className="flex gap-2 items-center text-sm">
-            <input
-              type="checkbox"
-              checked={settings.requireDeepLink}
-              onChange={(event) =>
-                update("requireDeepLink", event.target.checked)
-              }
-            />
-            Require usable FanDuel link
-          </label>
+          <p className="text-xs text-muted-foreground">
+            Sportsbook links are optional. Every generated set can be copied or
+            shared as a Gambly-ready slip.
+          </p>
         </section>
         <section className="border border-border bg-card p-4 space-y-3">
           <h2 className="font-bold uppercase">Calculator defaults</h2>
