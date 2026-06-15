@@ -35,7 +35,9 @@ function isValidOdds(odds: number): boolean {
 function parseUsage(response: Response): ApiUsage {
   const parse = (name: string) => {
     const value = response.headers.get(name);
-    return value === null ? null : Number(value);
+    if (value === null || value.trim() === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   };
   return {
     used: parse("x-requests-used"),
@@ -45,13 +47,43 @@ function parseUsage(response: Response): ApiUsage {
   };
 }
 
+function mergeUsage(current: ApiUsage, next: ApiUsage): ApiUsage {
+  return {
+    used: next.used ?? current.used,
+    remaining: next.remaining ?? current.remaining,
+    last: next.last ?? current.last,
+    updatedAt: next.updatedAt,
+  };
+}
+
 function explainApiFailure(response: Response, usage: ApiUsage): string {
-  if (response.status === 429 || usage.remaining === 0) {
-    return `Odds API quota exhausted. Used: ${usage.used ?? "unknown"}, remaining: ${usage.remaining ?? 0}.`;
+  if (response.status === 429 && usage.remaining === 0) {
+    return `Odds API quota exhausted. Used: ${usage.used ?? "unknown"}, remaining: 0.`;
+  }
+  if (response.status === 429) {
+    return `The Odds API temporarily rate-limited this refresh. Last confirmed remaining credits: ${usage.remaining ?? "unknown"}. Try refreshing again shortly.`;
   }
   if (response.status === 401)
     return "The Odds API rejected the saved API key.";
+  if (response.status === 422)
+    return "The Odds API rejected part of the odds request as invalid.";
   return `The Odds API request failed (${response.status}).`;
+}
+
+async function fetchInBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  fetchItem: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    results.push(
+      ...(await Promise.all(
+        items.slice(index, index + batchSize).map(fetchItem),
+      )),
+    );
+  }
+  return results;
 }
 
 function eventAllowed(startsAt: number, settings: AppSettings): boolean {
@@ -165,11 +197,14 @@ function poolMeetsGenerationMinimums(
 export async function refreshOdds(
   apiKey: string,
   settings: AppSettings,
+  previousUsage?: ApiUsage,
 ): Promise<OddsCache> {
   const sportsResponse = await fetch(
     `https://api.the-odds-api.com/v4/sports?apiKey=${encodeURIComponent(apiKey)}`,
   );
-  let usage = parseUsage(sportsResponse);
+  let usage = previousUsage
+    ? mergeUsage(previousUsage, parseUsage(sportsResponse))
+    : parseUsage(sportsResponse);
   if (!sportsResponse.ok)
     throw new Error(explainApiFailure(sportsResponse, usage));
   const sports: OddsData[] = await sportsResponse.json();
@@ -178,27 +213,25 @@ export async function refreshOdds(
     (sport) => sport.active && (!sport.has_outrights || includeOutrights),
   );
   const schedules = (
-    await Promise.all(
-      activeSports.map(async (sport) => {
-        const response = await fetch(
-          `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/events?apiKey=${encodeURIComponent(apiKey)}`,
-        );
-        if (!response.ok) return null;
-        const events: GameOdds[] = await response.json();
-        const eligibleEvents = events.filter((event) =>
-          eventAllowed(new Date(event.commence_time).getTime(), settings),
-        );
-        if (!eligibleEvents.length) return null;
-        return {
-          sport,
-          earliest: Math.min(
-            ...eligibleEvents.map((event) =>
-              new Date(event.commence_time).getTime(),
-            ),
+    await fetchInBatches(activeSports, 4, async (sport) => {
+      const response = await fetch(
+        `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/events?apiKey=${encodeURIComponent(apiKey)}`,
+      );
+      if (!response.ok) return null;
+      const events: GameOdds[] = await response.json();
+      const eligibleEvents = events.filter((event) =>
+        eventAllowed(new Date(event.commence_time).getTime(), settings),
+      );
+      if (!eligibleEvents.length) return null;
+      return {
+        sport,
+        earliest: Math.min(
+          ...eligibleEvents.map((event) =>
+            new Date(event.commence_time).getTime(),
           ),
-        };
-      }),
-    )
+        ),
+      };
+    })
   )
     .filter((schedule) => schedule !== null)
     .sort((a, b) => a.earliest - b.earliest);
@@ -206,19 +239,22 @@ export async function refreshOdds(
   const games: GameOdds[] = [];
   let bets: Bet[] = [];
   let fetchedSports = 0;
-  let failedSports = 0;
+  const failedSports: string[] = [];
   for (const schedule of schedules) {
     const response = await fetch(
       `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(schedule.sport.key)}/odds?${sportOddsQuery(apiKey, settings)}`,
     );
-    usage = parseUsage(response);
+    const responseUsage = parseUsage(response);
     if (!response.ok) {
-      if (response.status === 429 || usage.remaining === 0) {
-        throw new Error(explainApiFailure(response, usage));
+      if (response.status === 429) {
+        throw new Error(
+          explainApiFailure(response, mergeUsage(usage, responseUsage)),
+        );
       }
-      failedSports++;
+      failedSports.push(`${schedule.sport.key} (${response.status})`);
       continue;
     }
+    usage = mergeUsage(usage, responseUsage);
     fetchedSports++;
     games.push(...((await response.json()) as GameOdds[]));
     bets = extractValidBets(games, settings);
@@ -230,7 +266,10 @@ export async function refreshOdds(
     : bets;
   const removedForMissingLinks = withoutLinkRequirement.length - bets.length;
   const remainingShortage = poolShortage(bets, []);
-  const notice = `Discovered ${schedules.length} active sports with events in the configured window and fetched odds from ${fetchedSports}${failedSports ? ` (${failedSports} failed)` : ""}. Retained ${bets.length} eligible bets${removedForMissingLinks ? `; the deep-link requirement removed ${removedForMissingLinks}` : ""}.${remainingShortage ? ` Remaining shortage: ${remainingShortage}.` : ""}`;
+  const failureNotice = failedSports.length
+    ? ` Skipped failed sport requests: ${failedSports.slice(0, 5).join(", ")}${failedSports.length > 5 ? `, plus ${failedSports.length - 5} more` : ""}.`
+    : "";
+  const notice = `Discovered ${schedules.length} active sports with events in the configured window and fetched odds from ${fetchedSports}.${failureNotice} Retained ${bets.length} eligible bets${removedForMissingLinks ? `; the deep-link requirement removed ${removedForMissingLinks}` : ""}.${remainingShortage ? ` Remaining shortage: ${remainingShortage}.` : ""}`;
   if (bets.length === 0) {
     throw new Error(
       `No eligible ${settings.bookmaker} bets remained after checking ${fetchedSports} sports in the configured timing window. ${removedForMissingLinks ? `The deep-link requirement removed ${removedForMissingLinks} otherwise-valid bets. ` : ""}Remaining API credits: ${usage.remaining ?? "unknown"}.`,

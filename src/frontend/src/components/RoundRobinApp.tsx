@@ -112,7 +112,7 @@ export default function RoundRobinApp() {
       setError(null);
       const refreshed = selectedOnly
         ? await refreshSelectedBets(settings.apiKey, settings, currentBets)
-        : await refreshOdds(settings.apiKey, settings);
+        : await refreshOdds(settings.apiKey, settings, cache?.usage);
       if (selectedOnly) {
         const updated = currentBets.map(
           (oldBet) =>
