@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Bet } from "../types";
+
+const FANDUEL_MINIMUM_COMBO_STAKE = 0.09;
 
 interface Props {
   bets: Bet[];
@@ -31,8 +33,18 @@ function calculate(
   size: number,
   bankroll: number,
   losers: Set<string>,
-): { combos: number; stake: number; payout: number } {
+): {
+  combos: number;
+  independentCombos: number;
+  stake: number;
+  payout: number;
+} {
   const combos = combinations(bets, size);
+  const independentCombos = combos.filter(
+    (combo) =>
+      new Set(combo.map((bet) => bet.eventId || bet.game)).size ===
+      combo.length,
+  ).length;
   const stake = combos.length ? bankroll / combos.length : 0;
   const payout = combos.reduce(
     (total, combo) =>
@@ -43,7 +55,7 @@ function calculate(
             combo.reduce((product, bet) => product * decimalOdds(bet.odds), 1),
     0,
   );
-  return { combos: combos.length, stake, payout };
+  return { combos: combos.length, independentCombos, stake, payout };
 }
 
 export function RoundRobinCalculator({
@@ -54,7 +66,11 @@ export function RoundRobinCalculator({
   onSizeChange,
 }: Props) {
   const [losers, setLosers] = useState<Set<string>>(new Set());
+  const [bankrollDraft, setBankrollDraft] = useState(String(bankroll));
+  useEffect(() => setBankrollDraft(String(bankroll)), [bankroll]);
   const current = calculate(bets, size, bankroll, losers);
+  const minimumTotal = current.combos * FANDUEL_MINIMUM_COMBO_STAKE;
+  const belowMinimum = current.stake < FANDUEL_MINIMUM_COMBO_STAKE;
   const toggleLoser = (id: string) =>
     setLosers((existing) => {
       const next = new Set(existing);
@@ -71,8 +87,20 @@ export function RoundRobinCalculator({
             type="number"
             min="0"
             step="0.01"
-            value={bankroll}
-            onChange={(event) => onBankrollChange(Number(event.target.value))}
+            value={bankrollDraft}
+            onChange={(event) => {
+              const next = event.target.value;
+              setBankrollDraft(next);
+              if (next !== "" && Number.isFinite(Number(next)))
+                onBankrollChange(Number(next));
+            }}
+            onBlur={() => {
+              if (
+                bankrollDraft === "" ||
+                !Number.isFinite(Number(bankrollDraft))
+              )
+                setBankrollDraft(String(bankroll));
+            }}
             className="w-full bg-input border border-border p-2 mt-1"
           />
         </label>
@@ -94,10 +122,16 @@ export function RoundRobinCalculator({
           </select>
         </label>
       </div>
-      <div className="grid grid-cols-4 gap-2 text-sm">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
         <div>
-          <span className="text-muted-foreground">Combos</span>
+          <span className="text-muted-foreground">Math combos</span>
           <p className="font-bold">{current.combos}</p>
+        </div>
+        <div>
+          <span className="text-muted-foreground">
+            Independent-event combos
+          </span>
+          <p className="font-bold">{current.independentCombos}</p>
         </div>
         <div>
           <span className="text-muted-foreground">Per combo</span>
@@ -117,6 +151,31 @@ export function RoundRobinCalculator({
             {money(current.payout - bankroll)}
           </p>
         </div>
+      </div>
+      <div
+        className={`border p-3 text-xs ${belowMinimum ? "border-yellow-500 bg-yellow-500/10" : "border-border"}`}
+      >
+        <p>
+          Total wager: <strong>{money(bankroll)}</strong>. At FanDuel's assumed{" "}
+          {money(FANDUEL_MINIMUM_COMBO_STAKE)} minimum per combo, all{" "}
+          {current.combos} mathematical combinations require at least{" "}
+          <strong>{money(minimumTotal)}</strong>.
+        </p>
+        {belowMinimum && (
+          <p className="mt-1 text-yellow-500">
+            This bankroll averages only {money(current.stake)} per combo, below
+            the assumed minimum. Increase the bankroll or choose a smaller
+            round-robin size.
+          </p>
+        )}
+        {current.independentCombos !== current.combos && (
+          <p className="mt-1 text-muted-foreground">
+            {current.combos - current.independentCombos} combinations contain
+            multiple legs from the same event. FanDuel may reject or regroup
+            those; the exact accepted count is only known after the slip is
+            built.
+          </p>
+        )}
       </div>
       <div>
         <div className="flex justify-between">
@@ -171,8 +230,10 @@ export function RoundRobinCalculator({
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        Estimates split bankroll evenly. FanDuel rules, pushes, voids, limits,
-        and changing odds can alter actual payouts.
+        Estimates split the bankroll evenly across every mathematical
+        combination. FanDuel rules, same-event restrictions, pushes, voids,
+        limits, minimums, and changing odds can alter the accepted combinations
+        and actual payouts.
       </p>
     </div>
   );

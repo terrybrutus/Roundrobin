@@ -135,8 +135,8 @@ export function SettingsView({
                 }
                 className="w-full bg-input border border-border p-2 mt-1"
               >
-                <option value="upcoming">Prefer upcoming</option>
-                <option value="live">Prefer live</option>
+                <option value="upcoming">Upcoming only</option>
+                <option value="live">Live only</option>
                 <option value="mixed">Mixed</option>
               </select>
             </label>
@@ -170,8 +170,8 @@ export function SettingsView({
             Prioritize events today
           </label>
           <p className="text-xs text-muted-foreground">
-            These preferences rank the available bets. They no longer block a
-            valid 11-leg set from being generated.
+            Upcoming and live modes are strict. The lead time and time window
+            also determine which bets enter the eligible pool.
           </p>
         </section>
         <section className="border border-border bg-card p-4 space-y-3">
@@ -189,7 +189,8 @@ export function SettingsView({
           <p className="text-xs text-muted-foreground">
             Event and sport diversity are preferred automatically, but will
             relax when needed. Opposing selections remain a hard rule when
-            enabled.
+            enabled. Every generated set must contain 3 bets from -150 to -250,
+            2 from -251 to -449, 1 from -450 to -550, and 5 from +80 to +120.
           </p>
         </section>
         <section className="border border-border bg-card p-4 space-y-3">

@@ -34,12 +34,15 @@ function signedPoint(point: number): string {
 }
 
 function gamblyLine(bet: Bet): string {
-  if (bet.market === "h2h") return `${bet.selection} ML`;
+  const event = `${bet.sport}: ${bet.game}`;
+  if (bet.market === "h2h") return `${event} - ${bet.selection} ML`;
   if (bet.market === "spreads" && bet.point !== undefined)
-    return `${bet.selection} ${signedPoint(bet.point)}`;
+    return `${event} - ${bet.selection} ${signedPoint(bet.point)}`;
   if (bet.market === "totals" && bet.point !== undefined)
-    return `${bet.game} ${bet.selection} ${bet.point}`;
+    return `${event} - ${bet.selection} ${bet.point}`;
   return [
+    event,
+    "-",
     bet.description,
     bet.selection,
     bet.point !== undefined ? signedPoint(bet.point) : undefined,

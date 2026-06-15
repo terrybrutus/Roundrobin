@@ -8,10 +8,10 @@ interface StructureProgressProps {
 }
 
 const STRUCTURE = [
-  { key: "minus200", label: "~-200", max: 3, color: "bg-blue-500" },
-  { key: "minus300", label: "~-300", max: 2, color: "bg-purple-500" },
-  { key: "minus500", label: "~-500", max: 1, color: "bg-red-500" },
-  { key: "plus100", label: "~+100", max: 5, color: "bg-green-500" },
+  { key: "minus200", label: "-150 to -250", max: 3, color: "bg-blue-500" },
+  { key: "minus300", label: "-251 to -449", max: 2, color: "bg-purple-500" },
+  { key: "minus500", label: "-450 to -550", max: 1, color: "bg-red-500" },
+  { key: "plus100", label: "+80 to +120", max: 5, color: "bg-green-500" },
 ];
 
 export function StructureProgress({ structureCounts }: StructureProgressProps) {
@@ -61,7 +61,7 @@ export function StructureProgress({ structureCounts }: StructureProgressProps) {
       {isComplete && (
         <div className="mt-4 p-2 bg-green-500/10 border border-green-500/30 rounded">
           <p className="text-xs text-green-500 font-semibold">
-            ✓ Perfect structure!
+            Required structure complete
           </p>
         </div>
       )}
