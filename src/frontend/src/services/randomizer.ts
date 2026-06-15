@@ -3,8 +3,8 @@ import type {
   AppSettings,
   Bet,
   GameOdds,
-  Market,
   OddsCache,
+  OddsData,
 } from "../types";
 
 const STRUCTURE = [
@@ -13,7 +13,6 @@ const STRUCTURE = [
   { category: "minus500", count: 1 },
   { category: "plus100", count: 5 },
 ];
-const FALLBACK_TIME_WINDOW_HOURS = 72;
 
 export function getOddsCategory(odds: number): string {
   const absOdds = Math.abs(odds);
@@ -30,19 +29,6 @@ function isValidOdds(odds: number): boolean {
     (absOdds >= 150 && absOdds <= 250) ||
     (absOdds > 250 && absOdds < 450) ||
     (absOdds >= 450 && absOdds <= 550)
-  );
-}
-
-function hasValidPlus100Pairing(
-  outcome: { name: string; price: number },
-  market: Market,
-): boolean {
-  if (outcome.price <= 0 || outcome.price > 150) return false;
-  return market.outcomes.some(
-    (candidate) =>
-      candidate.name !== outcome.name &&
-      candidate.price < 0 &&
-      Math.abs(candidate.price) <= 200,
   );
 }
 
@@ -92,12 +78,6 @@ function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
       for (const market of bookmaker.markets || []) {
         for (const outcome of market.outcomes || []) {
           if (!isValidOdds(outcome.price)) continue;
-          if (
-            getOddsCategory(outcome.price) === "plus100" &&
-            !hasValidPlus100Pairing(outcome, market)
-          ) {
-            continue;
-          }
           const key = `${game.id}|${market.key}|${outcome.name}|${outcome.description ?? ""}|${outcome.point ?? ""}|${outcome.price}`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -141,11 +121,8 @@ export function estimatedRefreshCost(settings: AppSettings): number {
   return new Set(requestedMarkets(settings)).size;
 }
 
-export async function refreshOdds(
-  apiKey: string,
-  settings: AppSettings,
-): Promise<OddsCache> {
-  const query = new URLSearchParams({
+function baseOddsQuery(apiKey: string, settings: AppSettings): URLSearchParams {
+  return new URLSearchParams({
     apiKey,
     bookmakers: settings.bookmaker,
     markets: [...new Set(requestedMarkets(settings))].join(","),
@@ -153,34 +130,110 @@ export async function refreshOdds(
     includeLinks: "true",
     includeSids: "true",
   });
-  const response = await fetch(
-    `https://api.the-odds-api.com/v4/sports/upcoming/odds?${query}`,
+}
+
+function sportOddsQuery(
+  apiKey: string,
+  settings: AppSettings,
+): URLSearchParams {
+  const now = Date.now();
+  const query = baseOddsQuery(apiKey, settings);
+  query.set(
+    "commenceTimeTo",
+    new Date(now + settings.timeWindowHours * 3_600_000).toISOString(),
   );
-  const usage = parseUsage(response);
-  if (!response.ok) throw new Error(explainApiFailure(response, usage));
-  const games: GameOdds[] = await response.json();
-  let bets = extractValidBets(games, settings);
-  let notice: string | undefined;
-  const configuredShortage = poolShortage(bets, []);
-  if (
-    configuredShortage &&
-    settings.timingMode !== "live" &&
-    settings.timeWindowHours < FALLBACK_TIME_WINDOW_HOURS
-  ) {
-    const fallbackSettings = {
-      ...settings,
-      timeWindowHours: FALLBACK_TIME_WINDOW_HOURS,
-    };
-    const fallbackBets = extractValidBets(games, fallbackSettings);
-    const fallbackShortage = poolShortage(fallbackBets, []);
-    bets = fallbackBets;
-    notice = fallbackShortage
-      ? `The configured ${settings.timeWindowHours}-hour window could not fill the fixed 11-leg structure (${configuredShortage}). The refresh expanded to ${FALLBACK_TIME_WINDOW_HOURS} hours but is still short (${fallbackShortage}).`
-      : `The configured ${settings.timeWindowHours}-hour window could not fill the fixed 11-leg structure (${configuredShortage}), so this refresh included eligible events up to ${FALLBACK_TIME_WINDOW_HOURS} hours away. Picks are still prioritized by your generation strategy.`;
+  if (settings.timingMode === "upcoming") {
+    query.set(
+      "commenceTimeFrom",
+      new Date(now + settings.minimumLeadMinutes * 60_000).toISOString(),
+    );
   }
+  return query;
+}
+
+function poolMeetsGenerationMinimums(
+  bets: Bet[],
+  settings: AppSettings,
+): boolean {
+  if (poolShortage(bets, []) !== null) return false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (tryBuildRoundRobin(bets, [], settings, attempt)) return true;
+  }
+  return false;
+}
+
+export async function refreshOdds(
+  apiKey: string,
+  settings: AppSettings,
+): Promise<OddsCache> {
+  const sportsResponse = await fetch(
+    `https://api.the-odds-api.com/v4/sports?apiKey=${encodeURIComponent(apiKey)}`,
+  );
+  let usage = parseUsage(sportsResponse);
+  if (!sportsResponse.ok)
+    throw new Error(explainApiFailure(sportsResponse, usage));
+  const sports: OddsData[] = await sportsResponse.json();
+  const includeOutrights = requestedMarkets(settings).includes("outrights");
+  const activeSports = sports.filter(
+    (sport) => sport.active && (!sport.has_outrights || includeOutrights),
+  );
+  const schedules = (
+    await Promise.all(
+      activeSports.map(async (sport) => {
+        const response = await fetch(
+          `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/events?apiKey=${encodeURIComponent(apiKey)}`,
+        );
+        if (!response.ok) return null;
+        const events: GameOdds[] = await response.json();
+        const eligibleEvents = events.filter((event) =>
+          eventAllowed(new Date(event.commence_time).getTime(), settings),
+        );
+        if (!eligibleEvents.length) return null;
+        return {
+          sport,
+          earliest: Math.min(
+            ...eligibleEvents.map((event) =>
+              new Date(event.commence_time).getTime(),
+            ),
+          ),
+        };
+      }),
+    )
+  )
+    .filter((schedule) => schedule !== null)
+    .sort((a, b) => a.earliest - b.earliest);
+
+  const games: GameOdds[] = [];
+  let bets: Bet[] = [];
+  let fetchedSports = 0;
+  let failedSports = 0;
+  for (const schedule of schedules) {
+    const response = await fetch(
+      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(schedule.sport.key)}/odds?${sportOddsQuery(apiKey, settings)}`,
+    );
+    usage = parseUsage(response);
+    if (!response.ok) {
+      if (response.status === 429 || usage.remaining === 0) {
+        throw new Error(explainApiFailure(response, usage));
+      }
+      failedSports++;
+      continue;
+    }
+    fetchedSports++;
+    games.push(...((await response.json()) as GameOdds[]));
+    bets = extractValidBets(games, settings);
+    if (poolMeetsGenerationMinimums(bets, settings)) break;
+  }
+
+  const withoutLinkRequirement = settings.requireDeepLink
+    ? extractValidBets(games, { ...settings, requireDeepLink: false })
+    : bets;
+  const removedForMissingLinks = withoutLinkRequirement.length - bets.length;
+  const remainingShortage = poolShortage(bets, []);
+  const notice = `Discovered ${schedules.length} active sports with events in the configured window and fetched odds from ${fetchedSports}${failedSports ? ` (${failedSports} failed)` : ""}. Retained ${bets.length} eligible bets${removedForMissingLinks ? `; the deep-link requirement removed ${removedForMissingLinks}` : ""}.${remainingShortage ? ` Remaining shortage: ${remainingShortage}.` : ""}`;
   if (bets.length === 0) {
     throw new Error(
-      `No eligible ${settings.bookmaker} bets matched the timing, link, and odds filters. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
+      `No eligible ${settings.bookmaker} bets remained after checking ${fetchedSports} sports in the configured timing window. ${removedForMissingLinks ? `The deep-link requirement removed ${removedForMissingLinks} otherwise-valid bets. ` : ""}Remaining API credits: ${usage.remaining ?? "unknown"}.`,
     );
   }
   return { bets, usage, fetchedAt: new Date().toISOString(), notice };
@@ -203,16 +256,8 @@ export async function refreshSelectedBets(
     updatedAt: new Date().toISOString(),
   };
   for (const bet of uniqueEvents.values()) {
-    const query = new URLSearchParams({
-      apiKey,
-      bookmakers: settings.bookmaker,
-      markets: [...new Set(requestedMarkets(settings))].join(","),
-      oddsFormat: "american",
-      includeLinks: "true",
-      includeSids: "true",
-    });
     const response = await fetch(
-      `https://api.the-odds-api.com/v4/sports/${bet.sportKey}/events/${bet.eventId}/odds?${query}`,
+      `https://api.the-odds-api.com/v4/sports/${bet.sportKey}/events/${bet.eventId}/odds?${baseOddsQuery(apiKey, settings)}`,
     );
     usage = parseUsage(response);
     if (response.ok) games.push(await response.json());
@@ -293,6 +338,20 @@ function poolShortage(allBets: Bet[], lockedBets: Bet[]): string | null {
   return shortages.length ? shortages.join("; ") : null;
 }
 
+function rankCandidates(
+  candidates: Bet[],
+  settings: AppSettings,
+  attempt: number,
+): Bet[] {
+  const ranked = candidates
+    .map((bet) => ({ bet, score: priorityScore(bet, settings) }))
+    .sort((a, b) => b.score - a.score)
+    .map(({ bet }) => bet);
+  if (!ranked.length) return ranked;
+  const offset = attempt % ranked.length;
+  return [...ranked.slice(offset), ...ranked.slice(0, offset)];
+}
+
 function tryBuildRoundRobin(
   allBets: Bet[],
   lockedBets: Bet[],
@@ -304,17 +363,14 @@ function tryBuildRoundRobin(
   const remaining = STRUCTURE.map((item) => ({
     ...item,
     needed: Math.max(0, item.count - categoryCount(result, item.category)),
-    candidates: allBets
-      .filter(
+    candidates: rankCandidates(
+      allBets.filter(
         (bet) =>
           getOddsCategory(bet.odds) === item.category && !used.has(bet.id),
-      )
-      .sort(
-        (a, b) =>
-          priorityScore(b, settings) -
-          priorityScore(a, settings) +
-          (((attempt + 1) * 17) % 31),
       ),
+      settings,
+      attempt,
+    ),
   })).sort(
     (a, b) => a.candidates.length - a.needed - (b.candidates.length - b.needed),
   );
@@ -348,7 +404,7 @@ export function randomizeRoundRobin(
   const shortage = poolShortage(allBets, lockedBets);
   if (shortage) {
     throw new Error(
-      `The refreshed odds pool cannot fill the required 11-leg structure (${shortage}). Most spreads and totals are near -110 and do not qualify for the fixed negative-price buckets, so enable more markets, allow bets without deep links, or refresh later.`,
+      `The refreshed odds pool cannot fill the required 11-leg structure (${shortage}). Review the refresh diagnostics above to see how many sports were checked and whether the deep-link requirement removed otherwise-valid bets.`,
     );
   }
 

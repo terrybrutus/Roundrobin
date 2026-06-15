@@ -1,6 +1,7 @@
 export interface OddsData {
   key: string;
   active: boolean;
+  has_outrights?: boolean;
   group: string;
   title: string;
   description: string;

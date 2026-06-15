@@ -1,4 +1,5 @@
 import { ChevronLeft } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { AppSettings } from "../types";
 
 interface SettingsViewProps {
@@ -44,6 +45,55 @@ const PRESETS: Record<string, Partial<AppSettings>> = {
   },
 };
 
+interface NumberFieldProps {
+  label: string;
+  value: number;
+  min: number;
+  max?: number;
+  onChange: (value: number) => void;
+}
+
+function NumberField({ label, value, min, max, onChange }: NumberFieldProps) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const commit = () => {
+    const parsed = Number(draft);
+    if (draft === "" || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const normalized = Math.min(
+      max ?? Number.POSITIVE_INFINITY,
+      Math.max(min, parsed),
+    );
+    setDraft(String(normalized));
+    onChange(normalized);
+  };
+
+  return (
+    <label className="text-xs">
+      {label}
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        onChange={(event) => {
+          const next = event.target.value;
+          setDraft(next);
+          if (next !== "" && Number.isFinite(Number(next))) {
+            onChange(Number(next));
+          }
+        }}
+        onBlur={commit}
+        className="w-full bg-input border border-border p-2 mt-1"
+      />
+    </label>
+  );
+}
+
 export function SettingsView({
   settings,
   onChange,
@@ -58,17 +108,13 @@ export function SettingsView({
     min: number,
     max?: number,
   ) => (
-    <label className="text-xs">
-      {label}
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={Number(settings[key])}
-        onChange={(event) => update(key, Number(event.target.value) as never)}
-        className="w-full bg-input border border-border p-2 mt-1"
-      />
-    </label>
+    <NumberField
+      label={label}
+      value={Number(settings[key])}
+      min={min}
+      max={max}
+      onChange={(value) => update(key, value as never)}
+    />
   );
 
   return (
