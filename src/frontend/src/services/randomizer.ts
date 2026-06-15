@@ -14,6 +14,7 @@ const STRUCTURE = [
   { category: "plus100", count: 5 },
 ];
 const SPORT_REQUEST_DELAY_MS = 350;
+const FEATURED_MARKETS = new Set(["h2h", "spreads", "totals"]);
 
 export function getOddsCategory(odds: number): string {
   const absOdds = Math.abs(odds);
@@ -174,9 +175,16 @@ function baseOddsQuery(apiKey: string, settings: AppSettings): URLSearchParams {
 function sportOddsQuery(
   apiKey: string,
   settings: AppSettings,
+  hasOutrights: boolean,
 ): URLSearchParams {
   const now = Date.now();
   const query = baseOddsQuery(apiKey, settings);
+  const markets = hasOutrights
+    ? ["outrights"]
+    : requestedMarkets(settings).filter((market) =>
+        FEATURED_MARKETS.has(market),
+      );
+  query.set("markets", [...new Set(markets)].join(","));
   query.set(
     "commenceTimeTo",
     new Date(now + settings.timeWindowHours * 3_600_000).toISOString(),
@@ -226,9 +234,15 @@ export async function refreshOdds(
   let sportsWithOdds = 0;
   const failedSports: string[] = [];
   for (const sport of activeSports) {
+    const sportMarkets = sport.has_outrights
+      ? includeOutrights
+      : requestedMarkets(settings).some((market) =>
+          FEATURED_MARKETS.has(market),
+        );
+    if (!sportMarkets) continue;
     if (checkedSports > 0) await wait(SPORT_REQUEST_DELAY_MS);
     const response = await fetchWithRateLimitRetry(
-      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds?${sportOddsQuery(apiKey, settings)}`,
+      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds?${sportOddsQuery(apiKey, settings, Boolean(sport.has_outrights))}`,
     );
     checkedSports++;
     const responseUsage = parseUsage(response);
