@@ -13,10 +13,7 @@ const STRUCTURE = [
   { category: "minus500", count: 1 },
   { category: "plus100", count: 5 },
 ];
-const EVENT_CACHE_MS = 5 * 60_000;
-const DISCOVERY_BATCH_SIZE = 2;
-const DISCOVERY_BATCH_DELAY_MS = 350;
-const eventCache = new Map<string, { events: GameOdds[]; expiresAt: number }>();
+const SPORT_REQUEST_DELAY_MS = 350;
 
 export function getOddsCategory(odds: number): string {
   const absOdds = Math.abs(odds);
@@ -94,24 +91,6 @@ async function fetchWithRateLimitRetry(
     response = await fetch(input, init);
   }
   return response;
-}
-
-async function fetchInBatches<T, R>(
-  items: T[],
-  batchSize: number,
-  delayMilliseconds: number,
-  fetchItem: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  for (let index = 0; index < items.length; index += batchSize) {
-    results.push(
-      ...(await Promise.all(
-        items.slice(index, index + batchSize).map(fetchItem),
-      )),
-    );
-    if (index + batchSize < items.length) await wait(delayMilliseconds);
-  }
-  return results;
 }
 
 function eventAllowed(startsAt: number, settings: AppSettings): boolean {
@@ -240,55 +219,18 @@ export async function refreshOdds(
   const activeSports = sports.filter(
     (sport) => sport.active && (!sport.has_outrights || includeOutrights),
   );
-  let reusedEventSchedules = 0;
-  const schedules = (
-    await fetchInBatches(
-      activeSports,
-      DISCOVERY_BATCH_SIZE,
-      DISCOVERY_BATCH_DELAY_MS,
-      async (sport) => {
-        const cached = eventCache.get(sport.key);
-        let events: GameOdds[];
-        if (cached && cached.expiresAt > Date.now()) {
-          reusedEventSchedules++;
-          events = cached.events;
-        } else {
-          const response = await fetchWithRateLimitRetry(
-            `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/events?apiKey=${encodeURIComponent(apiKey)}`,
-          );
-          if (!response.ok) return null;
-          events = await response.json();
-          eventCache.set(sport.key, {
-            events,
-            expiresAt: Date.now() + EVENT_CACHE_MS,
-          });
-        }
-        const eligibleEvents = events.filter((event) =>
-          eventAllowed(new Date(event.commence_time).getTime(), settings),
-        );
-        if (!eligibleEvents.length) return null;
-        return {
-          sport,
-          earliest: Math.min(
-            ...eligibleEvents.map((event) =>
-              new Date(event.commence_time).getTime(),
-            ),
-          ),
-        };
-      },
-    )
-  )
-    .filter((schedule) => schedule !== null)
-    .sort((a, b) => a.earliest - b.earliest);
 
   const games: GameOdds[] = [];
   let bets: Bet[] = [];
-  let fetchedSports = 0;
+  let checkedSports = 0;
+  let sportsWithOdds = 0;
   const failedSports: string[] = [];
-  for (const schedule of schedules) {
+  for (const sport of activeSports) {
+    if (checkedSports > 0) await wait(SPORT_REQUEST_DELAY_MS);
     const response = await fetchWithRateLimitRetry(
-      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(schedule.sport.key)}/odds?${sportOddsQuery(apiKey, settings)}`,
+      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds?${sportOddsQuery(apiKey, settings)}`,
     );
+    checkedSports++;
     const responseUsage = parseUsage(response);
     if (!response.ok) {
       if (response.status === 429) {
@@ -296,12 +238,14 @@ export async function refreshOdds(
           explainApiFailure(response, mergeUsage(usage, responseUsage)),
         );
       }
-      failedSports.push(`${schedule.sport.key} (${response.status})`);
+      failedSports.push(`${sport.key} (${response.status})`);
       continue;
     }
     usage = mergeUsage(usage, responseUsage);
-    fetchedSports++;
-    games.push(...((await response.json()) as GameOdds[]));
+    const sportGames = (await response.json()) as GameOdds[];
+    if (!sportGames.length) continue;
+    sportsWithOdds++;
+    games.push(...sportGames);
     bets = extractValidBets(games, settings);
     if (poolMeetsGenerationMinimums(bets, settings)) break;
   }
@@ -314,10 +258,10 @@ export async function refreshOdds(
   const failureNotice = failedSports.length
     ? ` Skipped failed sport requests: ${failedSports.slice(0, 5).join(", ")}${failedSports.length > 5 ? `, plus ${failedSports.length - 5} more` : ""}.`
     : "";
-  const notice = `Discovered ${schedules.length} active sports with events in the configured window${reusedEventSchedules ? ` and reused cached event discovery for ${reusedEventSchedules} sports` : ""}. Fetched odds from ${fetchedSports}.${failureNotice} Retained ${bets.length} eligible bets${removedForMissingLinks ? `; the deep-link requirement removed ${removedForMissingLinks}` : ""}.${remainingShortage ? ` Remaining shortage: ${remainingShortage}.` : ""}`;
+  const notice = `Checked ${checkedSports} active sport odds endpoints; ${sportsWithOdds} returned events in the configured window.${failureNotice} Retained ${bets.length} eligible bets${removedForMissingLinks ? `; the deep-link requirement removed ${removedForMissingLinks}` : ""}.${remainingShortage ? ` Remaining shortage: ${remainingShortage}.` : ""}`;
   if (bets.length === 0) {
     throw new Error(
-      `No eligible ${settings.bookmaker} bets remained after checking ${fetchedSports} sports in the configured timing window. ${removedForMissingLinks ? `The deep-link requirement removed ${removedForMissingLinks} otherwise-valid bets. ` : ""}Remaining API credits: ${usage.remaining ?? "unknown"}.`,
+      `No eligible ${settings.bookmaker} bets remained after directly checking ${checkedSports} active sport odds endpoints; ${sportsWithOdds} returned events in the configured timing window.${failureNotice} ${removedForMissingLinks ? `The deep-link requirement removed ${removedForMissingLinks} otherwise-valid bets. ` : ""}Remaining API credits: ${usage.remaining ?? "unknown"}.`,
     );
   }
   return { bets, usage, fetchedAt: new Date().toISOString(), notice };
