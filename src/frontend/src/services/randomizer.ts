@@ -1,18 +1,77 @@
-import type { ApiUsage, AppSettings, Bet, GameOdds, OddsCache } from "../types";
+import type {
+  ApiUsage,
+  AppSettings,
+  Bet,
+  GameOdds,
+  Market,
+  OddsCache,
+  Outcome,
+} from "../types";
 
 const ROUND_ROBIN_LEGS = 11;
 const FEATURED_MARKETS = new Set(["h2h", "spreads", "totals"]);
+export const ODDS_STRUCTURE = [
+  { category: "minus200", label: "-150 to -250", count: 3 },
+  { category: "minus300", label: "-251 to -449", count: 2 },
+  { category: "minus500", label: "-450 to -550", count: 1 },
+  { category: "plus100", label: "+80 to +120", count: 5 },
+] as const;
 
-export function getOddsCategory(odds: number): string {
+export type OddsCategory = (typeof ODDS_STRUCTURE)[number]["category"];
+
+export function getOddsCategory(odds: number): OddsCategory | null {
   const absOdds = Math.abs(odds);
-  if (odds > 0) return "plus100";
-  if (absOdds <= 250) return "minus200";
-  if (absOdds < 450) return "minus300";
-  return "minus500";
+  if (odds >= 80 && odds <= 120) return "plus100";
+  if (odds <= -150 && absOdds <= 250) return "minus200";
+  if (odds <= -251 && absOdds <= 449) return "minus300";
+  if (odds <= -450 && absOdds <= 550) return "minus500";
+  return null;
 }
 
 function isValidOdds(odds: number): boolean {
-  return Number.isFinite(odds) && odds !== 0;
+  return Number.isFinite(odds) && getOddsCategory(odds) !== null;
+}
+
+function hasValidPlus100Pairing(outcome: Outcome, market: Market): boolean {
+  if (getOddsCategory(outcome.price) !== "plus100") return true;
+  return market.outcomes.some(
+    (candidate) =>
+      candidate.name !== outcome.name &&
+      candidate.price < 0 &&
+      Math.abs(candidate.price) <= 200,
+  );
+}
+
+function eventAllowed(startsAt: number, settings: AppSettings): boolean {
+  const now = Date.now();
+  const isLive = startsAt <= now;
+  if (settings.timingMode === "upcoming" && isLive) return false;
+  if (settings.timingMode === "live" && !isLive) return false;
+  if (!isLive && startsAt < now + settings.minimumLeadMinutes * 60_000)
+    return false;
+  return isLive || startsAt <= now + settings.timeWindowHours * 3_600_000;
+}
+
+export function oddsStructureCounts(bets: Bet[]): Record<OddsCategory, number> {
+  const counts: Record<OddsCategory, number> = {
+    minus200: 0,
+    minus300: 0,
+    minus500: 0,
+    plus100: 0,
+  };
+  for (const bet of bets) {
+    const category = getOddsCategory(bet.odds);
+    if (category) counts[category]++;
+  }
+  return counts;
+}
+
+function structureSummary(bets: Bet[]): string {
+  const counts = oddsStructureCounts(bets);
+  return ODDS_STRUCTURE.map(
+    ({ category, label, count }) =>
+      `${category} (${label}): ${counts[category]} available, ${count} needed`,
+  ).join("; ");
 }
 
 function parseUsage(response: Response): ApiUsage {
@@ -78,12 +137,14 @@ function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
 
   for (const game of games) {
     const startsAt = new Date(game.commence_time).getTime();
+    if (!eventAllowed(startsAt, settings)) continue;
 
     for (const bookmaker of game.bookmakers || []) {
       if (bookmaker.key !== settings.bookmaker) continue;
       for (const market of bookmaker.markets || []) {
         for (const outcome of market.outcomes || []) {
           if (!isValidOdds(outcome.price)) continue;
+          if (!hasValidPlus100Pairing(outcome, market)) continue;
           const key = `${game.id}|${market.key}|${outcome.name}|${outcome.description ?? ""}|${outcome.point ?? ""}|${outcome.price}`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -149,10 +210,10 @@ export async function refreshOdds(
   const games = (await response.json()) as GameOdds[];
   const bets = extractValidBets(games, settings);
   const links = bets.filter((bet) => bet.link).length;
-  const notice = `Simple refresh returned ${games.length} events and ${bets.length} usable bets. ${links} include sportsbook links; Gambly output works for every generated leg.`;
+  const notice = `Simple refresh returned ${games.length} events and retained ${bets.length} bets matching the strict timing and price rules. ${structureSummary(bets)}. ${links} include sportsbook links; Gambly output works for every generated leg.`;
   if (bets.length === 0) {
     throw new Error(
-      `The simple upcoming refresh returned no usable ${settings.bookmaker} bets. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
+      `The simple refresh returned no ${settings.bookmaker} bets matching the strict timing and price rules. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
     );
   }
   return { bets, usage, fetchedAt: new Date().toISOString(), notice };
@@ -232,6 +293,27 @@ function canAdd(candidate: Bet, result: Bet[], settings: AppSettings): boolean {
   return true;
 }
 
+function categoryCount(bets: Bet[], category: OddsCategory): number {
+  return bets.filter((bet) => getOddsCategory(bet.odds) === category).length;
+}
+
+function structureShortage(allBets: Bet[], lockedBets: Bet[]): string | null {
+  const shortages = ODDS_STRUCTURE.flatMap(({ category, label, count }) => {
+    const locked = categoryCount(lockedBets, category);
+    const required = Math.max(0, count - locked);
+    const available = categoryCount(
+      allBets.filter(
+        (bet) => !lockedBets.some((lockedBet) => lockedBet.id === bet.id),
+      ),
+      category,
+    );
+    return available < required
+      ? [`${category} (${label}): ${available} available, ${required} needed`]
+      : [];
+  });
+  return shortages.length ? shortages.join("; ") : null;
+}
+
 function rankCandidates(
   candidates: Bet[],
   selected: Bet[],
@@ -267,20 +349,25 @@ function tryBuildRoundRobin(
 ): Bet[] | null {
   const result = [...lockedBets];
   const used = new Set(result.map((bet) => bet.id));
-  while (result.length < ROUND_ROBIN_LEGS) {
-    const candidate = rankCandidates(
-      allBets.filter(
-        (bet) => !used.has(bet.id) && canAdd(bet, result, settings),
-      ),
-      result,
-      settings,
-      attempt + result.length,
-    )[0];
-    if (!candidate) return null;
-    result.push({ ...candidate, id: candidate.id || crypto.randomUUID() });
-    used.add(candidate.id);
+  for (const { category, count } of ODDS_STRUCTURE) {
+    while (categoryCount(result, category) < count) {
+      const candidate = rankCandidates(
+        allBets.filter(
+          (bet) =>
+            getOddsCategory(bet.odds) === category &&
+            !used.has(bet.id) &&
+            canAdd(bet, result, settings),
+        ),
+        result,
+        settings,
+        attempt + result.length,
+      )[0];
+      if (!candidate) return null;
+      result.push({ ...candidate, id: candidate.id || crypto.randomUUID() });
+      used.add(candidate.id);
+    }
   }
-  return result.slice(0, ROUND_ROBIN_LEGS);
+  return result.length === ROUND_ROBIN_LEGS ? result : null;
 }
 
 export function randomizeRoundRobin(
@@ -296,6 +383,25 @@ export function randomizeRoundRobin(
     throw new Error(
       `Unlock bets until no more than ${ROUND_ROBIN_LEGS} remain.`,
     );
+  const invalidLocked = lockedBets.filter(
+    (bet) => getOddsCategory(bet.odds) === null,
+  );
+  if (invalidLocked.length)
+    throw new Error(
+      "Unlock bets outside the allowed price ranges before generating.",
+    );
+  const overfilled = ODDS_STRUCTURE.find(
+    ({ category, count }) => categoryCount(lockedBets, category) > count,
+  );
+  if (overfilled)
+    throw new Error(
+      `Unlock ${overfilled.category} bets until no more than ${overfilled.count} remain locked.`,
+    );
+  const shortage = structureShortage(allBets, lockedBets);
+  if (shortage)
+    throw new Error(
+      `The refreshed FanDuel pool cannot fill the required 11-leg structure. ${shortage}. The app will not substitute out-of-range odds.`,
+    );
 
   let result: Bet[] | null = null;
   for (let attempt = 0; attempt < 100 && !result; attempt++) {
@@ -303,7 +409,7 @@ export function randomizeRoundRobin(
   }
   if (!result) {
     throw new Error(
-      `Could not find ${ROUND_ROBIN_LEGS} non-duplicate bets${settings.avoidOpposingSelections ? " without opposing selections" : ""}. Refresh again or enable more markets.`,
+      `The pool has enough prices in each bucket, but no valid ${ROUND_ROBIN_LEGS}-leg set could be assembled${settings.avoidOpposingSelections ? " without opposing selections" : ""}. Unlock conflicting bets or refresh again.`,
     );
   }
   return result;

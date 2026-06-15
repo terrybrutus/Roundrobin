@@ -2,6 +2,7 @@ import { History, Loader2, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   estimatedRefreshCost,
+  oddsStructureCounts,
   randomizeRoundRobin,
   refreshOdds,
   refreshSelectedBets,
@@ -12,12 +13,13 @@ import { BetslipSummary } from "./BetslipSummary";
 import { HistoryView } from "./HistoryView";
 import { RoundRobinCalculator } from "./RoundRobinCalculator";
 import { SettingsView } from "./SettingsView";
+import { StructureProgress } from "./StructureProgress";
 
 const SETTINGS_KEY = "roundrobin-settings-v3";
-const CACHE_KEY = "roundrobin-odds-cache-v3";
+const CACHE_KEY = "roundrobin-odds-cache-v4";
 const HISTORY_KEY = "roundrobin-history-v3";
-const BETS_KEY = "roundrobin-current-bets-v3";
-const PLACED_KEY = "roundrobin-placed-bets-v3";
+const BETS_KEY = "roundrobin-current-bets-v4";
+const PLACED_KEY = "roundrobin-placed-bets-v4";
 const defaults: AppSettings = {
   rememberKey: true,
   apiKey: "",
@@ -309,6 +311,9 @@ export default function RoundRobinApp() {
                 />
               </div>
               <div className="space-y-4">
+                <StructureProgress
+                  structureCounts={oddsStructureCounts(currentBets)}
+                />
                 <BetInsights bets={currentBets} />
                 <button
                   type="button"
