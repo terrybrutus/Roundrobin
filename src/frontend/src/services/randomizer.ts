@@ -11,7 +11,6 @@ import type {
 
 const ROUND_ROBIN_LEGS = 11;
 const FEATURED_MARKETS = new Set(["h2h", "spreads", "totals"]);
-const DISCOVERY_DELAY_MS = 100;
 const ODDS_REQUEST_DELAY_MS = 350;
 export const ODDS_STRUCTURE = [
   { category: "minus200", label: "-150 to -250", count: 3 },
@@ -191,12 +190,8 @@ export function estimatedRefreshCost(settings: AppSettings): number {
   return new Set(requestedMarkets(settings)).size;
 }
 
-function baseOddsQuery(
-  apiKey: string,
-  settings: AppSettings,
-  eventIds?: string[],
-): URLSearchParams {
-  const query = new URLSearchParams({
+function baseOddsQuery(apiKey: string, settings: AppSettings): URLSearchParams {
+  return new URLSearchParams({
     apiKey,
     bookmakers: settings.bookmaker,
     markets: [...new Set(requestedMarkets(settings))].join(","),
@@ -204,7 +199,24 @@ function baseOddsQuery(
     includeLinks: "true",
     includeSids: "true",
   });
-  if (eventIds?.length) query.set("eventIds", eventIds.join(","));
+}
+
+function sportOddsQuery(
+  apiKey: string,
+  settings: AppSettings,
+): URLSearchParams {
+  const now = Date.now();
+  const query = baseOddsQuery(apiKey, settings);
+  query.set(
+    "commenceTimeTo",
+    new Date(now + settings.timeWindowHours * 3_600_000).toISOString(),
+  );
+  if (settings.timingMode === "upcoming") {
+    query.set(
+      "commenceTimeFrom",
+      new Date(now + settings.minimumLeadMinutes * 60_000).toISOString(),
+    );
+  }
   return query;
 }
 
@@ -229,71 +241,47 @@ export async function refreshOdds(
     : parseUsage(sportsResponse);
   if (!sportsResponse.ok)
     throw new Error(explainApiFailure(sportsResponse, usage));
-  const sports = ((await sportsResponse.json()) as OddsData[]).filter(
-    (sport) => sport.active && !sport.has_outrights,
-  );
-  const discovered = new Map<string, GameOdds[]>();
-  const failedDiscovery: string[] = [];
-  let discoveryChecks = 0;
-  for (const sport of sports) {
-    if (discoveryChecks) await wait(DISCOVERY_DELAY_MS);
-    const response = await fetchWithRateLimitRetry(
-      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/events?apiKey=${encodeURIComponent(apiKey)}`,
-    );
-    discoveryChecks++;
-    usage = mergeUsage(usage, parseUsage(response));
-    if (!response.ok) {
-      failedDiscovery.push(`${sport.key} (${response.status})`);
-      continue;
-    }
-    const events = ((await response.json()) as GameOdds[]).filter((event) =>
-      eventAllowed(new Date(event.commence_time).getTime(), settings),
-    );
-    if (events.length) discovered.set(sport.key, events);
-  }
-
-  const prioritizedSports = [...discovered.entries()].sort(
-    ([sportA, eventsA], [sportB, eventsB]) => {
-      const tennisA = sportA.startsWith("tennis") ? 1 : 0;
-      const tennisB = sportB.startsWith("tennis") ? 1 : 0;
-      return tennisB - tennisA || eventsB.length - eventsA.length;
-    },
-  );
+  const prioritizedSports = ((await sportsResponse.json()) as OddsData[])
+    .filter((sport) => sport.active && !sport.has_outrights)
+    .sort((sportA, sportB) => {
+      const tennisA = sportA.key.startsWith("tennis") ? 1 : 0;
+      const tennisB = sportB.key.startsWith("tennis") ? 1 : 0;
+      return tennisB - tennisA || sportA.title.localeCompare(sportB.title);
+    });
   const games: GameOdds[] = [];
   let bets: Bet[] = [];
   let checkedSports = 0;
+  let sportsWithEvents = 0;
   const failedOdds: string[] = [];
-  for (const [sportKey, events] of prioritizedSports) {
+  for (const sport of prioritizedSports) {
     if (checkedSports) await wait(ODDS_REQUEST_DELAY_MS);
     const response = await fetchWithRateLimitRetry(
-      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sportKey)}/odds?${baseOddsQuery(
-        apiKey,
-        settings,
-        events.map((event) => event.id),
-      )}`,
+      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds?${sportOddsQuery(apiKey, settings)}`,
     );
     checkedSports++;
     usage = mergeUsage(usage, parseUsage(response));
     if (!response.ok) {
       if (response.status === 429)
         throw new Error(explainApiFailure(response, usage));
-      failedOdds.push(`${sportKey} (${response.status})`);
+      failedOdds.push(`${sport.key} (${response.status})`);
       continue;
     }
-    games.push(...((await response.json()) as GameOdds[]));
+    const sportGames = (await response.json()) as GameOdds[];
+    if (!sportGames.length) continue;
+    sportsWithEvents++;
+    games.push(...sportGames);
     bets = extractValidBets(games, settings);
     if (canGenerateFromPool(bets, settings)) break;
   }
 
   const links = bets.filter((bet) => bet.link).length;
-  const failures = [...failedDiscovery, ...failedOdds];
-  const failureNotice = failures.length
-    ? ` Failed requests: ${failures.slice(0, 4).join(", ")}${failures.length > 4 ? `, plus ${failures.length - 4} more` : ""}.`
+  const failureNotice = failedOdds.length
+    ? ` Failed requests: ${failedOdds.slice(0, 4).join(", ")}${failedOdds.length > 4 ? `, plus ${failedOdds.length - 4} more` : ""}.`
     : "";
-  const notice = `Discovered ${[...discovered.values()].reduce((total, events) => total + events.length, 0)} events across ${discovered.size} sports in the configured window, then checked FanDuel odds for ${checkedSports} sports.${failureNotice} Retained ${bets.length} featured-market bets matching the strict price rules. ${structureSummary(bets)}. ${links} include sportsbook links. FanDuel alternate lines are not included in this refresh; Gambly output works for every generated leg.`;
+  const notice = `Checked ${checkedSports} direct sport odds endpoints; ${sportsWithEvents} returned ${games.length} FanDuel events in the configured window.${failureNotice} Retained ${bets.length} featured-market bets matching the strict price rules. ${structureSummary(bets)}. ${links} include sportsbook links. FanDuel alternate lines are not included in this refresh; Gambly output works for every generated leg.`;
   if (bets.length === 0) {
     throw new Error(
-      `No ${settings.bookmaker} bets matched the strict price rules after discovering ${discovered.size} sports in the configured timing window and checking odds for ${checkedSports}. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
+      `No ${settings.bookmaker} bets matched the strict price rules after directly checking ${checkedSports} sports; ${sportsWithEvents} returned events in the configured timing window. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
     );
   }
   return { bets, usage, fetchedAt: new Date().toISOString(), notice };
