@@ -241,13 +241,17 @@ export async function refreshOdds(
     : parseUsage(sportsResponse);
   if (!sportsResponse.ok)
     throw new Error(explainApiFailure(sportsResponse, usage));
-  const prioritizedSports = ((await sportsResponse.json()) as OddsData[])
-    .filter((sport) => sport.active && !sport.has_outrights)
-    .sort((sportA, sportB) => {
-      const tennisA = sportA.key.startsWith("tennis") ? 1 : 0;
-      const tennisB = sportB.key.startsWith("tennis") ? 1 : 0;
-      return tennisB - tennisA || sportA.title.localeCompare(sportB.title);
-    });
+  const activeSports = ((await sportsResponse.json()) as OddsData[]).filter(
+    (sport) => sport.active,
+  );
+  const outrightCapableSports = activeSports.filter(
+    (sport) => sport.has_outrights,
+  ).length;
+  const prioritizedSports = activeSports.sort((sportA, sportB) => {
+    const tennisA = sportA.key.startsWith("tennis") ? 1 : 0;
+    const tennisB = sportB.key.startsWith("tennis") ? 1 : 0;
+    return tennisB - tennisA || sportA.title.localeCompare(sportB.title);
+  });
   const games: GameOdds[] = [];
   let bets: Bet[] = [];
   let checkedSports = 0;
@@ -278,7 +282,7 @@ export async function refreshOdds(
   const failureNotice = failedOdds.length
     ? ` Failed requests: ${failedOdds.slice(0, 4).join(", ")}${failedOdds.length > 4 ? `, plus ${failedOdds.length - 4} more` : ""}.`
     : "";
-  const notice = `Checked ${checkedSports} direct sport odds endpoints; ${sportsWithEvents} returned ${games.length} FanDuel events in the configured window.${failureNotice} Retained ${bets.length} featured-market bets matching the strict price rules. ${structureSummary(bets)}. ${links} include sportsbook links. FanDuel alternate lines are not included in this refresh; Gambly output works for every generated leg.`;
+  const notice = `Checked ${checkedSports} direct sport odds endpoints, including sports that support outrights; ${sportsWithEvents} returned ${games.length} FanDuel events in the configured window.${failureNotice} ${outrightCapableSports} active sports support outrights but were still eligible for match odds. Retained ${bets.length} featured-market bets matching the strict price rules. ${structureSummary(bets)}. ${links} include sportsbook links. FanDuel alternate lines are not included in this refresh; Gambly output works for every generated leg.`;
   if (bets.length === 0) {
     throw new Error(
       `No ${settings.bookmaker} bets matched the strict price rules after directly checking ${checkedSports} sports; ${sportsWithEvents} returned events in the configured timing window. Remaining API credits: ${usage.remaining ?? "unknown"}.`,
