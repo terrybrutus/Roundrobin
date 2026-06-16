@@ -6,6 +6,8 @@ import type {
   Market,
   OddsCache,
   OddsData,
+  OddsProbeReport,
+  OddsProbeRow,
   Outcome,
 } from "../types";
 
@@ -52,6 +54,13 @@ function eventAllowed(startsAt: number, settings: AppSettings): boolean {
   if (!isLive && startsAt < now + settings.minimumLeadMinutes * 60_000)
     return false;
   return isLive || startsAt <= now + settings.timeWindowHours * 3_600_000;
+}
+
+function timingAllowedForProbe(
+  startsAt: number,
+  settings: AppSettings,
+): boolean {
+  return eventAllowed(startsAt, settings);
 }
 
 export function oddsStructureCounts(bets: Bet[]): Record<OddsCategory, number> {
@@ -186,6 +195,13 @@ function requestedMarkets(settings: AppSettings): string[] {
   return markets.length ? markets : ["h2h"];
 }
 
+function probeMarkets(settings: AppSettings): string[] {
+  const markets = settings.markets.filter((market) =>
+    FEATURED_MARKETS.has(market),
+  );
+  return markets.length ? markets : ["h2h", "spreads", "totals"];
+}
+
 export function estimatedRefreshCost(settings: AppSettings): number {
   return new Set(requestedMarkets(settings)).size;
 }
@@ -218,6 +234,154 @@ function sportOddsQuery(
     );
   }
   return query;
+}
+
+function singleMarketOddsQuery(
+  apiKey: string,
+  settings: AppSettings,
+  market: string,
+): URLSearchParams {
+  const query = sportOddsQuery(apiKey, settings);
+  query.set("markets", market);
+  return query;
+}
+
+function bucketCountsFromPrices(prices: number[]): Record<string, number> {
+  const counts: Record<string, number> = {
+    minus200: 0,
+    minus300: 0,
+    minus500: 0,
+    plus100: 0,
+    outOfRange: 0,
+  };
+  for (const price of prices) {
+    const category = getOddsCategory(price);
+    if (category) counts[category]++;
+    else counts.outOfRange++;
+  }
+  return counts;
+}
+
+function summarizeProbeRow(
+  sport: OddsData,
+  market: string,
+  status: number,
+  ok: boolean,
+  games: GameOdds[],
+  settings: AppSettings,
+  error?: string,
+): OddsProbeRow {
+  let fanduelEvents = 0;
+  let rawOutcomes = 0;
+  let timingEligibleOutcomes = 0;
+  const strictPrices: number[] = [];
+  const samplePrices: number[] = [];
+  const marketKeys = new Set<string>();
+
+  for (const game of games) {
+    const bookmaker = (game.bookmakers || []).find(
+      (book) => book.key === settings.bookmaker,
+    );
+    if (!bookmaker) continue;
+    fanduelEvents++;
+    const startsAt = new Date(game.commence_time).getTime();
+    const timingEligible = timingAllowedForProbe(startsAt, settings);
+    for (const returnedMarket of bookmaker.markets || []) {
+      marketKeys.add(returnedMarket.key);
+      for (const outcome of returnedMarket.outcomes || []) {
+        rawOutcomes++;
+        if (samplePrices.length < 12) samplePrices.push(outcome.price);
+        if (!timingEligible) continue;
+        timingEligibleOutcomes++;
+        if (isValidOdds(outcome.price)) strictPrices.push(outcome.price);
+      }
+    }
+  }
+
+  return {
+    sportKey: sport.key,
+    sportTitle: sport.title || sport.sport_title || sport.key,
+    market,
+    status,
+    ok,
+    rawEvents: games.length,
+    fanduelEvents,
+    rawOutcomes,
+    timingEligibleOutcomes,
+    strictPriceOutcomes: strictPrices.length,
+    bucketCounts: bucketCountsFromPrices(strictPrices),
+    marketKeys: [...marketKeys],
+    samplePrices,
+    error,
+  };
+}
+
+export async function probeRawOdds(
+  apiKey: string,
+  settings: AppSettings,
+  previousUsage?: ApiUsage,
+): Promise<OddsProbeReport> {
+  const sportsResponse = await fetchWithRateLimitRetry(
+    `https://api.the-odds-api.com/v4/sports?apiKey=${encodeURIComponent(apiKey)}`,
+  );
+  let usage = previousUsage
+    ? mergeUsage(previousUsage, parseUsage(sportsResponse))
+    : parseUsage(sportsResponse);
+  if (!sportsResponse.ok)
+    throw new Error(explainApiFailure(sportsResponse, usage));
+
+  const activeSports = ((await sportsResponse.json()) as OddsData[])
+    .filter((sport) => sport.active)
+    .sort((sportA, sportB) => {
+      const tennisA = sportA.key.startsWith("tennis") ? 1 : 0;
+      const tennisB = sportB.key.startsWith("tennis") ? 1 : 0;
+      return tennisB - tennisA || sportA.title.localeCompare(sportB.title);
+    });
+  const markets = probeMarkets(settings);
+  const rows: OddsProbeRow[] = [];
+  const maxSports = Math.min(18, activeSports.length);
+
+  for (const sport of activeSports.slice(0, maxSports)) {
+    for (const market of markets) {
+      if (rows.length) await wait(ODDS_REQUEST_DELAY_MS);
+      const response = await fetchWithRateLimitRetry(
+        `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds?${singleMarketOddsQuery(apiKey, settings, market)}`,
+      );
+      usage = mergeUsage(usage, parseUsage(response));
+      if (!response.ok) {
+        rows.push(
+          summarizeProbeRow(
+            sport,
+            market,
+            response.status,
+            false,
+            [],
+            settings,
+            await response.text(),
+          ),
+        );
+        continue;
+      }
+      rows.push(
+        summarizeProbeRow(
+          sport,
+          market,
+          response.status,
+          true,
+          (await response.json()) as GameOdds[],
+          settings,
+        ),
+      );
+    }
+  }
+
+  const eventRows = rows.filter((row) => row.fanduelEvents > 0);
+  const strictMatches = rows.reduce(
+    (total, row) => total + row.strictPriceOutcomes,
+    0,
+  );
+  const summary = `Probed ${rows.length} sport/market requests across ${maxSports} active sports. ${eventRows.length} requests returned FanDuel events. ${strictMatches} timing-eligible outcomes matched strict price buckets before generation rules.`;
+  return { rows, usage, checkedAt: new Date().toISOString(), summary };
 }
 
 function canGenerateFromPool(bets: Bet[], settings: AppSettings): boolean {

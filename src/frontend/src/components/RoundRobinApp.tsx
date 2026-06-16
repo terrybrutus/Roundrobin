@@ -3,11 +3,18 @@ import { useEffect, useRef, useState } from "react";
 import {
   estimatedRefreshCost,
   oddsStructureCounts,
+  probeRawOdds,
   randomizeRoundRobin,
   refreshOdds,
   refreshSelectedBets,
 } from "../services/randomizer";
-import type { AppSettings, Bet, OddsCache, RoundRobinSet } from "../types";
+import type {
+  AppSettings,
+  Bet,
+  OddsCache,
+  OddsProbeReport,
+  RoundRobinSet,
+} from "../types";
 import { BetInsights } from "./BetInsights";
 import { BetslipSummary } from "./BetslipSummary";
 import { HistoryView } from "./HistoryView";
@@ -69,6 +76,8 @@ export default function RoundRobinApp() {
   );
   const [lockedBetIds, setLockedBetIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probeReport, setProbeReport] = useState<OddsProbeReport | null>(null);
   const requestInFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"main" | "settings" | "history">("main");
@@ -156,6 +165,33 @@ export default function RoundRobinApp() {
       setPlacedBetIds(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Randomization failed");
+    }
+  };
+  const runProbe = async () => {
+    if (requestInFlight.current) return;
+    if (!settings.apiKey) {
+      setView("settings");
+      setError("Add The Odds API key in Settings first.");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Run a raw odds probe? This checks up to 18 sports one market at a time and may use several Odds API credits.",
+      )
+    )
+      return;
+    try {
+      requestInFlight.current = true;
+      setProbing(true);
+      setError(null);
+      setProbeReport(
+        await probeRawOdds(settings.apiKey, settings, cache?.usage),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Raw probe failed");
+    } finally {
+      requestInFlight.current = false;
+      setProbing(false);
     }
   };
   const toggleSet = (
@@ -275,6 +311,14 @@ export default function RoundRobinApp() {
             >
               Recheck Selected 11
             </button>
+            <button
+              type="button"
+              onClick={runProbe}
+              disabled={loading || probing}
+              className="border border-yellow-500 px-4 py-3 font-bold uppercase disabled:opacity-30"
+            >
+              {probing ? "Probing..." : "Raw Odds Probe"}
+            </button>
             <span className="text-xs text-muted-foreground">
               Full refresh: {estimatedRefreshCost(settings)} credits per sport
               with events; stops when fillable | selected recheck estimate:{" "}
@@ -293,6 +337,82 @@ export default function RoundRobinApp() {
             <p className="text-xs text-yellow-500 mt-3">{cache.notice}</p>
           )}
         </section>
+        {probeReport && (
+          <section className="border border-yellow-500 bg-yellow-500/10 p-4 space-y-3">
+            <div className="flex flex-wrap justify-between gap-2">
+              <div>
+                <h2 className="font-bold uppercase">Raw Odds Probe</h2>
+                <p className="text-xs text-muted-foreground">
+                  {new Date(probeReport.checkedAt).toLocaleString()}
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                API remaining: {probeReport.usage.remaining ?? "?"} | last:{" "}
+                {probeReport.usage.last ?? "?"}
+              </p>
+            </div>
+            <p className="text-sm">{probeReport.summary}</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground">
+                  <tr className="text-left">
+                    <th className="p-2">Sport</th>
+                    <th className="p-2">Market</th>
+                    <th className="p-2">Status</th>
+                    <th className="p-2">Events</th>
+                    <th className="p-2">Outcomes</th>
+                    <th className="p-2">Strict</th>
+                    <th className="p-2">Buckets</th>
+                    <th className="p-2">Sample prices</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {probeReport.rows.slice(0, 36).map((row) => (
+                    <tr
+                      key={`${row.sportKey}-${row.market}`}
+                      className="border-t border-border align-top"
+                    >
+                      <td className="p-2">
+                        <div className="font-semibold">{row.sportTitle}</div>
+                        <div className="text-muted-foreground">
+                          {row.sportKey}
+                        </div>
+                      </td>
+                      <td className="p-2">{row.market}</td>
+                      <td className={row.ok ? "p-2" : "p-2 text-red-500"}>
+                        {row.status}
+                      </td>
+                      <td className="p-2">
+                        {row.rawEvents} raw / {row.fanduelEvents} FanDuel
+                      </td>
+                      <td className="p-2">
+                        {row.rawOutcomes} raw / {row.timingEligibleOutcomes}{" "}
+                        timing
+                      </td>
+                      <td className="p-2">{row.strictPriceOutcomes}</td>
+                      <td className="p-2">
+                        -200 {row.bucketCounts.minus200 || 0}, -300{" "}
+                        {row.bucketCounts.minus300 || 0}, -500{" "}
+                        {row.bucketCounts.minus500 || 0}, +100{" "}
+                        {row.bucketCounts.plus100 || 0}
+                      </td>
+                      <td className="p-2">
+                        {row.samplePrices
+                          .map((price) => `${price > 0 ? "+" : ""}${price}`)
+                          .join(", ") || row.error?.slice(0, 80)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {probeReport.rows.length > 36 && (
+              <p className="text-xs text-muted-foreground">
+                Showing first 36 of {probeReport.rows.length} probe rows.
+              </p>
+            )}
+          </section>
+        )}
         {error && (
           <div className="border border-yellow-500 bg-yellow-500/10 p-3 text-sm">
             {error}

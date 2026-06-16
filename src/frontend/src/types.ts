@@ -76,6 +76,30 @@ export interface OddsCache {
   notice?: string;
 }
 
+export interface OddsProbeRow {
+  sportKey: string;
+  sportTitle: string;
+  market: string;
+  status: number;
+  ok: boolean;
+  rawEvents: number;
+  fanduelEvents: number;
+  rawOutcomes: number;
+  timingEligibleOutcomes: number;
+  strictPriceOutcomes: number;
+  bucketCounts: Record<string, number>;
+  marketKeys: string[];
+  samplePrices: number[];
+  error?: string;
+}
+
+export interface OddsProbeReport {
+  rows: OddsProbeRow[];
+  usage: ApiUsage;
+  checkedAt: string;
+  summary: string;
+}
+
 export type TimingMode = "upcoming" | "live" | "mixed";
 export type StrategyMode = "soonest" | "placement" | "random";
 
