@@ -136,6 +136,10 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function oddsApiTime(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 function extractValidBets(games: GameOdds[], settings: AppSettings): Bet[] {
   const now = Date.now();
   const seen = new Set<string>();
@@ -209,12 +213,12 @@ function sportOddsQuery(
   const query = baseOddsQuery(apiKey, settings);
   query.set(
     "commenceTimeTo",
-    new Date(now + settings.timeWindowHours * 3_600_000).toISOString(),
+    oddsApiTime(new Date(now + settings.timeWindowHours * 3_600_000)),
   );
   if (settings.timingMode === "upcoming") {
     query.set(
       "commenceTimeFrom",
-      new Date(now + settings.minimumLeadMinutes * 60_000).toISOString(),
+      oddsApiTime(new Date(now + settings.minimumLeadMinutes * 60_000)),
     );
   }
   return query;
